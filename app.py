@@ -83,16 +83,21 @@ from starlette.responses import RedirectResponse
 # ========= LOGGING =========
 import logging.handlers
 from core.constants import DATA_DIR
+from src.request_context import RequestIdLogFilter, RequestIdMiddleware
 
 _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.INFO)
-_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - request_id=%(request_id)s - %(message)s'
+)
+_request_id_filter = RequestIdLogFilter()
 
 # Clear existing handlers to avoid duplicates
 for _h in list(_root_logger.handlers):
     _root_logger.removeHandler(_h)
 
 _console_h = logging.StreamHandler()
+_console_h.addFilter(_request_id_filter)
 _console_h.setFormatter(_formatter)
 _root_logger.addHandler(_console_h)
 
@@ -107,6 +112,7 @@ try:
     _file_h = logging.handlers.RotatingFileHandler(
         _log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
+    _file_h.addFilter(_request_id_filter)
     _file_h.setFormatter(_formatter)
     _root_logger.addHandler(_file_h)
 except Exception as e:
@@ -472,6 +478,10 @@ if AUTH_ENABLED:
     logger.info("Auth middleware enabled (AUTH_ENABLED=true)")
 else:
     logger.info("Auth middleware disabled (set AUTH_ENABLED=true to enable)")
+
+# Added after authentication so this middleware is the outer correlation
+# boundary and its request ID is available to downstream middleware and routes.
+app.add_middleware(RequestIdMiddleware)
 
 # ========= STATIC FILES =========
 os.makedirs(STATIC_DIR, exist_ok=True)
