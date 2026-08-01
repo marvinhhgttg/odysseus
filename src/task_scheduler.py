@@ -723,6 +723,25 @@ class TaskScheduler:
             db.close()
 
     async def _execute_task(self, task_id: str, *, bypass_model_slot: bool = False, release_executing: bool = True):
+        run_id = str(uuid.uuid4())
+        from src.request_context import correlation_context
+
+        with correlation_context(task_run_id=run_id):
+            await self._execute_task_correlated(
+                task_id,
+                run_id,
+                bypass_model_slot=bypass_model_slot,
+                release_executing=release_executing,
+            )
+
+    async def _execute_task_correlated(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        bypass_model_slot: bool = False,
+        release_executing: bool = True,
+    ):
         # Create the run record with status="queued" BEFORE waiting on the
         # semaphore so the UI can show that a manually-triggered task is in
         # line behind another. Once we acquire the slot, flip to "running"
@@ -731,7 +750,6 @@ class TaskScheduler:
         current = asyncio.current_task()
         if current:
             self._task_handles[task_id] = current
-        run_id = str(uuid.uuid4())
         _q_db = SessionLocal()
         try:
             run = TaskRun(

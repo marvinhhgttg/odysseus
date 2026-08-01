@@ -294,3 +294,119 @@ async def test_replaced_run_keeps_buffers_and_lifecycle_separate(caplog):
     assert sum("Agent run finished " in item for item in messages) == 1
 
     _discard_run(session_id, second)
+
+
+def test_log_filter_exposes_task_run_id():
+    import logging
+
+    from src.request_context import RequestIdLogFilter, correlation_context
+
+    record = logging.LogRecord(
+        "test",
+        logging.INFO,
+        __file__,
+        1,
+        "message",
+        (),
+        None,
+    )
+
+    with correlation_context(
+        request_id="request-task-1",
+        agent_run_id="agent-task-1",
+        task_run_id="task-run-1",
+    ):
+        assert RequestIdLogFilter().filter(record)
+
+    assert record.request_id == "request-task-1"
+    assert record.run_id == "agent-task-1"
+    assert record.task_run_id == "task-run-1"
+
+
+def test_task_run_context_resets():
+    from src.request_context import correlation_context, current_task_run_id
+
+    assert current_task_run_id() == "-"
+
+    with correlation_context(task_run_id="outer-task-run"):
+        assert current_task_run_id() == "outer-task-run"
+
+        with correlation_context(task_run_id="inner-task-run"):
+            assert current_task_run_id() == "inner-task-run"
+
+        assert current_task_run_id() == "outer-task-run"
+
+    assert current_task_run_id() == "-"
+
+
+@pytest.mark.asyncio
+async def test_task_run_context_isolated_between_async_tasks():
+    from src.request_context import correlation_context, current_task_run_id
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    observed = {}
+
+    async def worker(name):
+        with correlation_context(task_run_id=name):
+            observed[f"{name}-before"] = current_task_run_id()
+            entered.set()
+            await release.wait()
+            observed[f"{name}-after"] = current_task_run_id()
+
+    first = asyncio.create_task(worker("task-run-a"))
+    await entered.wait()
+
+    entered.clear()
+    second = asyncio.create_task(worker("task-run-b"))
+    await entered.wait()
+
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert observed == {
+        "task-run-a-before": "task-run-a",
+        "task-run-a-after": "task-run-a",
+        "task-run-b-before": "task-run-b",
+        "task-run-b-after": "task-run-b",
+    }
+    assert current_task_run_id() == "-"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_binds_generated_task_run_id():
+    from src.request_context import current_task_run_id
+    from src.task_scheduler import TaskScheduler
+
+    scheduler = TaskScheduler.__new__(TaskScheduler)
+    observed = {}
+
+    async def execute_correlated(
+        task_id,
+        run_id,
+        *,
+        bypass_model_slot=False,
+        release_executing=True,
+    ):
+        observed["task_id"] = task_id
+        observed["run_id"] = run_id
+        observed["context_id"] = current_task_run_id()
+        observed["bypass_model_slot"] = bypass_model_slot
+        observed["release_executing"] = release_executing
+
+    scheduler._execute_task_correlated = execute_correlated
+
+    assert current_task_run_id() == "-"
+
+    await scheduler._execute_task(
+        "task-123",
+        bypass_model_slot=True,
+        release_executing=False,
+    )
+
+    assert observed["task_id"] == "task-123"
+    assert observed["run_id"] != "-"
+    assert observed["context_id"] == observed["run_id"]
+    assert observed["bypass_model_slot"] is True
+    assert observed["release_executing"] is False
+    assert current_task_run_id() == "-"
