@@ -1100,7 +1100,7 @@ class TaskScheduler:
                 # Persist the actual exception message so the UI can show it
                 err_text = f"{type(exec_exc).__name__}: {exec_exc}"
                 run_obj = db.query(TaskRun).filter(TaskRun.id == run_id).first()
-                if run_obj and run_obj.status in ("running", "success"):
+                if run_obj and run_obj.status in ("queued", "running", "success"):
                     run_obj.status = "error"
                     run_obj.error = err_text[:2000]
                     run_obj.finished_at = _utcnow()
