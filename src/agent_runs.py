@@ -17,6 +17,7 @@ close / navigation / refresh). It does NOT survive a server restart.
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import AsyncGenerator, Dict, Optional
 
@@ -98,81 +99,137 @@ def get_status(session_id: str) -> Optional[str]:
     return r.status if r else None
 
 
-async def _drain(session_id: str, agen: AsyncGenerator[str, None],
-                 prev_task: Optional[asyncio.Task] = None) -> None:
-    """Pull every event from the wrapped generator into the run buffer, fanning
-    each out to live subscribers. Runs to completion regardless of subscribers."""
-    run = _RUNS.get(session_id)
-    if run is None:
-        return
-    # If this run replaced an in-flight one (rapid double-send), wait for that
-    # one to fully finish first. Its CancelledError handler calls aclose(), which
-    # persists its partial response — letting it complete before we start writing
-    # keeps the two runs' session saves sequential instead of interleaved.
-    if prev_task is not None and not prev_task.done():
-        try:
-            await asyncio.wait({prev_task})
-        except asyncio.CancelledError:
-            raise            # our own cancellation — propagate
-        except Exception:
-            pass
+async def _drain(
+    session_id: str,
+    run: _Run,
+    agen: AsyncGenerator[str, None],
+    prev_task: Optional[asyncio.Task] = None,
+    replaced_previous: bool = False,
+) -> None:
+    """Drain one concrete run without resolving replacements by session ID."""
+    started = time.monotonic()
+    error_type = "unknown"
+
+    logger.info(
+        "Agent run started session_id=%s replaced_previous=%s",
+        session_id,
+        str(replaced_previous).lower(),
+    )
+
     try:
+        # A rapid double-send cancels the previous run. Wait until its
+        # cancellation handler has persisted the partial response before this
+        # run starts writing to the same session.
+        if prev_task is not None and not prev_task.done():
+            await asyncio.wait({prev_task})
+
         async for ev in agen:
             _publish(run, ev)
+
         if run.status == "running":
             run.status = "done"
+
     except asyncio.CancelledError:
         run.status = "stopped"
-        # Let the wrapped generator's own CancelledError handler run (it saves
-        # the partial response to the session).
+
+        # Let the wrapped generator finalize and persist its partial response.
         try:
             await agen.aclose()
         except Exception:
             pass
-    except Exception as e:
-        logger.error("[agent-run] %s failed: %s", session_id, e, exc_info=True)
+
+    except Exception as exc:
         run.status = "error"
+        error_type = type(exc).__name__
+
         _publish(
             run,
             "event: error\n"
             f"data: {json.dumps({'error': 'Agent run failed before completion.', 'status': 500})}\n\n",
         )
         _publish(run, "data: [DONE]\n\n")
+
     finally:
-        # Wake every subscriber with the end sentinel so their SSE closes.
+        duration_ms = int((time.monotonic() - started) * 1000)
+        event_count = len(run.buffer)
+
+        if run.status == "done":
+            logger.info(
+                "Agent run finished session_id=%s status=%s "
+                "duration_ms=%d event_count=%d",
+                session_id,
+                run.status,
+                duration_ms,
+                event_count,
+            )
+        elif run.status == "stopped":
+            logger.info(
+                "Agent run stopped session_id=%s status=%s "
+                "duration_ms=%d event_count=%d",
+                session_id,
+                run.status,
+                duration_ms,
+                event_count,
+            )
+        else:
+            logger.error(
+                "Agent run failed session_id=%s status=%s "
+                "duration_ms=%d event_count=%d error_type=%s",
+                session_id,
+                run.status,
+                duration_ms,
+                event_count,
+                error_type,
+            )
+
+        # Wake every subscriber so its SSE connection can close.
         for q in list(run.subscribers):
             try:
                 q.put_nowait((None, None))
             except Exception:
                 pass
-        # Run is terminal — arm the grace timer so it (and its buffer) is
-        # eventually freed even if nobody ever reconnects. subscribe() cancels
-        # this on connect and re-arms on disconnect.
-        _schedule_evict(session_id)
+
+        # A replaced run no longer owns this session ID. It must not schedule
+        # an eviction task for the newer run now stored under the same key.
+        if _RUNS.get(session_id) is run:
+            _schedule_evict(session_id)
 
 
 def start(session_id: str, agen: AsyncGenerator[str, None]) -> _Run:
-    """Start a detached run draining `agen` for a session. If a run is already in
-    flight for this session (e.g. a rapid double-send), it's cancelled first."""
+    """Start a detached run, replacing any active run for the session."""
     prev = _RUNS.get(session_id)
     prev_task: Optional[asyncio.Task] = None
+    replaced_previous = bool(
+        prev and prev.task and not prev.task.done()
+    )
+
     if prev:
         if prev.task and not prev.task.done():
             prev.task.cancel()
-            prev_task = prev.task   # new run awaits this before it starts writing
+            prev_task = prev.task
         if prev.evict_task and not prev.evict_task.done():
             prev.evict_task.cancel()
+
     run = _Run()
     _RUNS[session_id] = run
 
     # create_task copies the current Context. Bind both identifiers while the
-    # detached task is created so logs remain correlated after the HTTP request
-    # and its SSE subscriber have ended.
+    # detached task is created so its logs remain correlated after the HTTP
+    # request and its SSE subscriber have ended.
     with correlation_context(
         request_id=run.request_id,
         agent_run_id=run.run_id,
     ):
-        run.task = asyncio.create_task(_drain(session_id, agen, prev_task))
+        run.task = asyncio.create_task(
+            _drain(
+                session_id,
+                run,
+                agen,
+                prev_task,
+                replaced_previous,
+            )
+        )
+
     return run
 
 
