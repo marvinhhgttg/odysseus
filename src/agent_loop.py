@@ -2215,10 +2215,13 @@ def _resolve_tool_blocks(
         if tool_blocks:
             logger.info(f"Agent round {round_num}: {len(tool_blocks)} fenced tool block(s) detected")
 
-    resp_preview = round_response[:200].replace('\n', '\\n') if round_response else "(empty)"
-    logger.info(f"Agent round {round_num} summary: {len(round_response)} chars, "
-                f"{len(native_tool_calls)} native calls, "
-                f"{len(tool_blocks)} tool blocks. Preview: {resp_preview}")
+    logger.info(
+        "Agent round %s summary: response_chars=%s native_calls=%s tool_blocks=%s",
+        round_num,
+        len(round_response),
+        len(native_tool_calls),
+        len(tool_blocks),
+    )
 
     return tool_blocks, used_native, converted_calls
 
@@ -2637,22 +2640,27 @@ async def stream_agent_loop(
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
     logger.info(
-        "[agent-intent] latest=%r continuation=%s low_signal=%s domains=%s active_doc_relevant=%s retrieval_query=%r",
-        _last_user[:120],
+        "[agent-intent] continuation=%s low_signal=%s domains=%s "
+        "active_doc_relevant=%s latest_chars=%s retrieval_query_chars=%s",
         bool(_intent.get("continuation")),
         _low_signal_turn,
         sorted(_intent.get("domains") or []),
         _active_document_relevant,
-        _retrieval_query[:200],
+        len(_last_user),
+        len(_retrieval_query),
     )
     if _low_signal_turn and _existing_conversation:
         logger.info(
-            "[agent] keeping contextual path for low-signal turn in existing conversation latest=%r",
-            _last_user[:80],
+            "[agent] keeping contextual path for low-signal turn "
+            "in existing conversation latest_chars=%s",
+            len(_last_user),
         )
     _mcp_disabled_map = _load_mcp_disabled_map() if mcp_mgr else {}
     if _direct_low_signal:
-        logger.info("[agent] direct low-signal reply path for latest=%r", _last_user[:80])
+        logger.info(
+            "[agent] direct low-signal reply path latest_chars=%s",
+            len(_last_user),
+        )
         direct_messages = (
             _minimal_odysseus_general_messages(
                 messages,
