@@ -21,12 +21,13 @@ def _test_utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _stub_heavy():
+def _stub_heavy(monkeypatch):
     for name in [
         "src.builtin_actions", "src.ai_interaction", "src.endpoint_resolver",
         "src.agent_loop", "src.session_manager",
     ]:
-        sys.modules.setdefault(name, types.ModuleType(name))
+        if name not in sys.modules:
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
 
 def _setup_isolated_db():
@@ -74,7 +75,7 @@ def test_scheduler_utcnow_preserves_naive_utc_contract():
 
 def _drive_scheduler(monkeypatch, pre_start_setup=None):
     """Build a TaskScheduler bypassing __init__ and run start() + two polls."""
-    _stub_heavy()
+    _stub_heavy(monkeypatch)
     cd, ScheduledTask, TaskRun = _setup_isolated_db()
 
     from src.task_scheduler import TaskScheduler
@@ -116,6 +117,8 @@ def _drive_scheduler(monkeypatch, pre_start_setup=None):
     # (stubbed to _never here); filter those out so the test only counts
     # real per-poll task dispatches.
     real_dispatches = [c for c in all_dispatched if c.__name__ != "_never"]
+    for coro in all_dispatched:
+        coro.close()
     return cd, ScheduledTask, TaskRun, real_dispatches
 
 
