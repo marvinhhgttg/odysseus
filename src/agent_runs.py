@@ -17,13 +17,24 @@ close / navigation / refresh). It does NOT survive a server restart.
 import asyncio
 import json
 import logging
+import uuid
 from typing import AsyncGenerator, Dict, Optional
+
+from src.request_context import correlation_context, current_request_id
 
 logger = logging.getLogger(__name__)
 
 
 class _Run:
-    __slots__ = ("buffer", "subscribers", "status", "task", "evict_task")
+    __slots__ = (
+        "buffer",
+        "subscribers",
+        "status",
+        "task",
+        "evict_task",
+        "run_id",
+        "request_id",
+    )
 
     def __init__(self) -> None:
         self.buffer: list = []          # ordered SSE event strings (replay log)
@@ -31,6 +42,8 @@ class _Run:
         self.status: str = "running"    # running | done | error | stopped
         self.task: Optional[asyncio.Task] = None
         self.evict_task: Optional[asyncio.Task] = None
+        self.run_id: str = str(uuid.uuid4())
+        self.request_id: str = current_request_id()
 
 
 _RUNS: Dict[str, _Run] = {}
@@ -151,7 +164,15 @@ def start(session_id: str, agen: AsyncGenerator[str, None]) -> _Run:
             prev.evict_task.cancel()
     run = _Run()
     _RUNS[session_id] = run
-    run.task = asyncio.create_task(_drain(session_id, agen, prev_task))
+
+    # create_task copies the current Context. Bind both identifiers while the
+    # detached task is created so logs remain correlated after the HTTP request
+    # and its SSE subscriber have ended.
+    with correlation_context(
+        request_id=run.request_id,
+        agent_run_id=run.run_id,
+    ):
+        run.task = asyncio.create_task(_drain(session_id, agen, prev_task))
     return run
 
 

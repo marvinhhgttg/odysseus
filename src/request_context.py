@@ -6,13 +6,44 @@ import contextvars
 import logging
 import re
 import uuid
+from contextlib import contextmanager
+from typing import Iterator
 
 _REQUEST_ID = contextvars.ContextVar("odysseus_request_id", default="-")
+_AGENT_RUN_ID = contextvars.ContextVar("odysseus_agent_run_id", default="-")
 _VALID_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 def current_request_id() -> str:
     return _REQUEST_ID.get()
+
+
+def current_agent_run_id() -> str:
+    return _AGENT_RUN_ID.get()
+
+
+@contextmanager
+def correlation_context(
+    *,
+    request_id: str | None = None,
+    agent_run_id: str | None = None,
+) -> Iterator[None]:
+    """Temporarily bind correlation identifiers to the current async context."""
+    request_token = (
+        _REQUEST_ID.set(request_id) if request_id is not None else None
+    )
+    run_token = (
+        _AGENT_RUN_ID.set(agent_run_id)
+        if agent_run_id is not None
+        else None
+    )
+    try:
+        yield
+    finally:
+        if run_token is not None:
+            _AGENT_RUN_ID.reset(run_token)
+        if request_token is not None:
+            _REQUEST_ID.reset(request_token)
 
 
 def normalize_request_id(value: str | None) -> str:
@@ -25,6 +56,7 @@ def normalize_request_id(value: str | None) -> str:
 class RequestIdLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = current_request_id()
+        record.run_id = current_agent_run_id()
         return True
 
 

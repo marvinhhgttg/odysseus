@@ -88,7 +88,8 @@ from src.request_context import RequestIdLogFilter, RequestIdMiddleware
 _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.INFO)
 _formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - request_id=%(request_id)s - %(message)s'
+    '%(asctime)s - %(name)s - %(levelname)s - '
+    'request_id=%(request_id)s - run_id=%(run_id)s - %(message)s'
 )
 _request_id_filter = RequestIdLogFilter()
 

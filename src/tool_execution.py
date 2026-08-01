@@ -576,13 +576,21 @@ async def execute_tool_block(
     workspace: Optional[str] = None,
     tool_policy: Optional[Any] = None,
 ) -> Tuple[str, Dict]:
-    """Execute a single tool block. Returns (description, result_dict).
+    """Execute a tool with workspace binding and correlation-safe logging.
 
-    Thin wrapper: bind the per-turn workspace (so the path resolvers + subprocess
-    cwd confine to it) for the duration of this call, then delegate. Reset on the
-    way out so the binding never leaks to the next tool call.
+    Tool arguments, commands, descriptions, results, and owner values are
+    deliberately excluded from these log messages.
     """
+    tool = str(getattr(block, "tool_type", "unknown"))
+    safe_session_id = session_id or "-"
+    started = time.monotonic()
     token = _active_workspace.set(workspace or None)
+
+    logger.info(
+        "Tool execution started tool=%s session_id=%s",
+        tool,
+        safe_session_id,
+    )
     try:
         output = await _execute_tool_block_impl(
             block,
@@ -592,9 +600,44 @@ async def execute_tool_block(
             progress_cb=progress_cb,
             tool_policy=tool_policy,
         )
+    except asyncio.CancelledError:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "Tool execution cancelled tool=%s session_id=%s duration_ms=%d",
+            tool,
+            safe_session_id,
+            duration_ms,
+        )
+        raise
+    except Exception:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.exception(
+            "Tool execution failed tool=%s session_id=%s duration_ms=%d",
+            tool,
+            safe_session_id,
+            duration_ms,
+        )
+        raise
+    else:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        result = output[1]
+        exit_code = (
+            result.get("exit_code", "n/a")
+            if isinstance(result, dict)
+            else "n/a"
+        )
+        logger.info(
+            "Tool execution finished tool=%s session_id=%s "
+            "exit_code=%s duration_ms=%d",
+            tool,
+            safe_session_id,
+            exit_code,
+            duration_ms,
+        )
         return output
     finally:
         _active_workspace.reset(token)
+
 
 
 async def _execute_tool_block_impl(
@@ -736,7 +779,6 @@ async def _execute_tool_block_impl(
                 "exit_code": 0,
                 "bg_job_id": rec["id"],
             }
-            logger.info(f"Tool executed: {desc} -> bg job {rec['id']}")
             return desc, result
 
     # Route MCP-extracted tools through the MCP manager. Forward
@@ -958,7 +1000,6 @@ async def _execute_tool_block_impl(
             "exit_code": 1
         }
 
-    logger.info(f"Tool executed: {desc} -> exit_code={result.get('exit_code', 'n/a')}")
     return desc, result
 
 
