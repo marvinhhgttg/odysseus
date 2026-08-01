@@ -89,7 +89,7 @@ _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.INFO)
 _formatter = logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - '
-    'request_id=%(request_id)s - run_id=%(run_id)s - %(message)s'
+    'request_id=%(request_id)s - run_id=%(run_id)s task_run_id=%(task_run_id)s - %(message)s'
 )
 _request_id_filter = RequestIdLogFilter()
 
