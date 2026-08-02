@@ -385,11 +385,22 @@ class TaskScheduler:
                 run = q.first()
                 if not run or run.status not in ("queued", "running"):
                     return False
+                previous_status = run.status
                 run.status = "aborted"
                 run.error = message
                 run.result = run.result or message
                 run.finished_at = _utcnow()
                 db.commit()
+
+                if previous_status == "queued":
+                    from src.request_context import correlation_context
+
+                    with correlation_context(task_run_id=run.id):
+                        logger.info(
+                            "Task run aborted while queued (task_id=%s)",
+                            task_id,
+                        )
+
                 return True
             finally:
                 db.close()

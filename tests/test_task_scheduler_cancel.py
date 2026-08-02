@@ -1,3 +1,4 @@
+import logging
 import asyncio
 
 from sqlalchemy import Column, DateTime, String, Text, create_engine
@@ -40,7 +41,7 @@ def _setup_db(tmp_path, monkeypatch):
     return session_local, ScheduledTask, TaskRun
 
 
-def test_stop_task_cleans_up_queued_handle_and_run(tmp_path, monkeypatch):
+def test_stop_task_cleans_up_queued_handle_and_run(tmp_path, monkeypatch, caplog):
     session_local, ScheduledTask, TaskRun = _setup_db(tmp_path, monkeypatch)
 
     db = session_local()
@@ -92,7 +93,18 @@ def test_stop_task_cleans_up_queued_handle_and_run(tmp_path, monkeypatch):
         assert "queued-task" not in scheduler._task_handles
         assert "queued-task" not in scheduler._executing
 
-    asyncio.run(drive())
+    from src.request_context import RequestIdLogFilter
+
+    correlation_filter = RequestIdLogFilter()
+    caplog.handler.addFilter(correlation_filter)
+    try:
+        with caplog.at_level(
+            logging.INFO,
+            logger="src.task_scheduler",
+        ):
+            asyncio.run(drive())
+    finally:
+        caplog.handler.removeFilter(correlation_filter)
 
     db = session_local()
     try:
@@ -101,5 +113,17 @@ def test_stop_task_cleans_up_queued_handle_and_run(tmp_path, monkeypatch):
         assert run.error == "Stopped by user"
         assert run.finished_at is not None
         assert run.finished_at >= run.started_at
+        persisted_run_id = run.id
     finally:
         db.close()
+
+    queued_abort_records = [
+        record
+        for record in caplog.records
+        if record.name == "src.task_scheduler"
+        and record.getMessage()
+        == "Task run aborted while queued (task_id=queued-task)"
+    ]
+
+    assert len(queued_abort_records) == 1
+    assert queued_abort_records[0].task_run_id == persisted_run_id
