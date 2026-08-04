@@ -586,6 +586,19 @@ async def execute_tool_block(
     started = time.monotonic()
     token = _active_workspace.set(workspace or None)
 
+    from src.tool_risk import classify_tool_risk
+
+    risk_assessment = classify_tool_risk(tool)
+    logger.info(
+        "Tool risk shadow tool=%s risk_level=%s risk_source=%s "
+        "approval_would_be_required=%s session_id=%s",
+        tool,
+        risk_assessment.risk.value,
+        risk_assessment.source,
+        risk_assessment.approval_would_be_required,
+        safe_session_id,
+    )
+
     logger.info(
         "Tool execution started tool=%s session_id=%s",
         tool,
