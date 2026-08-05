@@ -1739,6 +1739,7 @@ class ToolApprovalRecord(Base):
     risk = Column(String, nullable=False)
     argument_hash = Column(String, nullable=False)
     fingerprint = Column(String, nullable=False)
+    tool_content = Column(EncryptedText, nullable=False)
     status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime, nullable=False, default=utcnow_naive)
     expires_at = Column(DateTime, nullable=False)
@@ -1847,6 +1848,34 @@ def _migrate_seed_email_account():
         logging.getLogger(__name__).warning(f"seed email account migration: {e}")
 
 
+
+def migrate_add_tool_approval_content(bind=None):
+    """Add encrypted resumable payload storage to existing SQLite databases."""
+
+    target = bind or engine
+    if target.dialect.name != "sqlite":
+        return
+
+    try:
+        with target.begin() as conn:
+            columns = {
+                row[1]
+                for row in conn.exec_driver_sql(
+                    "PRAGMA table_info(tool_approvals)"
+                ).fetchall()
+            }
+            if columns and "tool_content" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE tool_approvals "
+                    "ADD COLUMN tool_content TEXT"
+                )
+    except Exception as exc:
+        logger.warning(
+            "tool approval content migration failed: %s",
+            exc,
+        )
+
+
 # WARNING: Foreign-key enforcement is enabled globally for all SQLite connections.
 # Any future migrations or schema changes that temporarily violate foreign-key
 # constraints will fail. To perform such operations, foreign_keys must be
@@ -1858,6 +1887,7 @@ def init_db():
     """
     _migrate_model_endpoints()
     Base.metadata.create_all(bind=engine)
+    migrate_add_tool_approval_content()
     _migrate_add_hidden_models_column()
     _migrate_add_cached_models_column()
     _migrate_add_pinned_models_column()

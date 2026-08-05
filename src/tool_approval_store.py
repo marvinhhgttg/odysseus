@@ -59,13 +59,52 @@ def _to_domain(row: ToolApprovalRecord) -> ToolApproval:
     )
 
 
+def _validate_tool_content(
+    approval: ToolApproval,
+    tool_content: str,
+) -> str:
+    """Verify that persisted content is exactly bound to the approval."""
+
+    if not isinstance(tool_content, str):
+        raise ApprovalError("tool content must be a string")
+
+    if argument_hash(tool_content) != approval.argument_hash:
+        raise ApprovalError(
+            "tool content does not match approval argument hash"
+        )
+
+    candidate = approval_fingerprint(
+        owner=approval.owner,
+        session_id=approval.session_id,
+        run_id=approval.run_id,
+        tool_name=approval.tool_name,
+        risk=approval.risk,
+        arguments=tool_content,
+    )
+    if candidate != approval.fingerprint:
+        raise ApprovalError(
+            "tool content does not match approval fingerprint"
+        )
+
+    return tool_content
+
+
 class ToolApprovalStore:
     """Store with owner-scoped and atomic lifecycle transitions."""
 
     def __init__(self, session_factory: SessionFactory | None = None) -> None:
         self._session_factory = session_factory or SessionLocal
 
-    def create(self, approval: ToolApproval) -> ToolApproval:
+    def create(
+        self,
+        approval: ToolApproval,
+        *,
+        tool_content: str,
+    ) -> ToolApproval:
+        tool_content = _validate_tool_content(
+            approval,
+            tool_content,
+        )
         db = self._session_factory()
         try:
             row = ToolApprovalRecord(
@@ -77,6 +116,7 @@ class ToolApprovalStore:
                 risk=approval.risk,
                 argument_hash=approval.argument_hash,
                 fingerprint=approval.fingerprint,
+                tool_content=tool_content,
                 status=approval.status.value,
                 created_at=_to_db_time(approval.created_at),
                 expires_at=_to_db_time(approval.expires_at),
@@ -94,6 +134,45 @@ class ToolApprovalStore:
         except Exception:
             db.rollback()
             raise
+        finally:
+            db.close()
+
+    def load_tool_content(
+        self,
+        approval_id: str,
+        *,
+        owner: str,
+    ) -> str:
+        """Load and verify the exact persisted invocation payload."""
+
+        db = self._session_factory()
+        try:
+            row = (
+                db.query(ToolApprovalRecord)
+                .filter(
+                    ToolApprovalRecord.id == approval_id,
+                    ToolApprovalRecord.owner == owner,
+                )
+                .first()
+            )
+            if row is None:
+                raise ApprovalError("approval is unavailable")
+            if row.tool_content is None:
+                raise ApprovalError(
+                    "approval has no resumable tool content"
+                )
+
+            approval = _to_domain(row)
+            return _validate_tool_content(
+                approval,
+                row.tool_content,
+            )
+        except ApprovalError:
+            raise
+        except Exception as exc:
+            raise ApprovalError(
+                "approval tool content is unavailable or invalid"
+            ) from exc
         finally:
             db.close()
 
