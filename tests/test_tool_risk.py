@@ -139,3 +139,81 @@ def test_every_known_native_tool_has_explicit_risk_classification():
     }
 
     assert unknown == set()
+
+
+@pytest.mark.asyncio
+async def test_mcp_annotations_drive_shadow_log_without_blocking_execution(
+    monkeypatch,
+    caplog,
+):
+    import src.tool_execution as execution
+
+    monkeypatch.setattr(
+        execution,
+        "_owner_is_admin",
+        lambda owner: True,
+    )
+
+    class FakeMcpManager:
+        def __init__(self):
+            self.annotation_lookups = []
+            self.calls = []
+
+        def get_tool_annotations(self, qualified_name):
+            self.annotation_lookups.append(qualified_name)
+            return {"destructiveHint": True}
+
+        async def call_tool(self, qualified_name, arguments):
+            self.calls.append((qualified_name, arguments))
+            return {
+                "stdout": "executed",
+                "exit_code": 0,
+            }
+
+    manager = FakeMcpManager()
+    monkeypatch.setattr(
+        execution,
+        "get_mcp_manager",
+        lambda: manager,
+    )
+
+    block = SimpleNamespace(
+        tool_type="mcp__demo__list_items",
+        content='{"limit": 3}',
+    )
+
+    with caplog.at_level(logging.INFO, logger=execution.__name__):
+        description, result = await execution.execute_tool_block(
+            block,
+            session_id="mcp-risk-shadow-test",
+        )
+
+    assert description == "mcp: mcp__demo__list_items"
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "executed"
+
+    assert manager.annotation_lookups == [
+        "mcp__demo__list_items"
+    ]
+    assert manager.calls == [
+        (
+            "mcp__demo__list_items",
+            {"limit": 3},
+        )
+    ]
+
+    shadow_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Tool risk shadow ")
+    ]
+    assert len(shadow_records) == 1
+
+    message = shadow_records[0].getMessage()
+    assert "tool=mcp__demo__list_items" in message
+    assert "risk_level=destructive" in message
+    assert "risk_source=mcp_destructive_hint" in message
+    assert "approval_would_be_required=True" in message
+    assert "session_id=mcp-risk-shadow-test" in message
+    assert "limit" not in message
+    assert "executed" not in message

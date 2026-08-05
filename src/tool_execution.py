@@ -588,7 +588,28 @@ async def execute_tool_block(
 
     from src.tool_risk import classify_tool_risk
 
-    risk_assessment = classify_tool_risk(tool)
+    annotations = None
+    if tool.startswith("mcp__"):
+        try:
+            mcp = get_mcp_manager()
+            get_annotations = getattr(
+                mcp,
+                "get_tool_annotations",
+                None,
+            )
+            if callable(get_annotations):
+                annotations = get_annotations(tool)
+        except Exception:
+            logger.debug(
+                "MCP annotation lookup failed for tool=%s",
+                tool,
+                exc_info=True,
+            )
+
+    risk_assessment = classify_tool_risk(
+        tool,
+        annotations=annotations,
+    )
     logger.info(
         "Tool risk shadow tool=%s risk_level=%s risk_source=%s "
         "approval_would_be_required=%s session_id=%s",

@@ -352,6 +352,7 @@ class McpManager:
                     "name": tool.name,
                     "description": tool.description or "",
                     "input_schema": tool.inputSchema if hasattr(tool, "inputSchema") else {},
+                    "annotations": getattr(tool, "annotations", None),
                 })
 
             self._sessions[server_id] = session
@@ -430,6 +431,19 @@ class McpManager:
                 )
         finally:
             db.close()
+
+    def get_tool_annotations(self, qualified_name: str) -> Any:
+        """Return stored MCP annotations for a qualified tool name."""
+        parts = qualified_name.split("__", 2)
+        if len(parts) != 3 or parts[0] != "mcp":
+            return None
+
+        server_id, tool_name = parts[1], parts[2]
+        for tool in self._tools.get(server_id, []):
+            if tool.get("name") == tool_name:
+                return tool.get("annotations")
+
+        return None
 
     async def call_tool(self, qualified_name: str, arguments: Dict) -> Dict:
         """Call an MCP tool by its qualified name (mcp__{server_id}__{tool_name}).
