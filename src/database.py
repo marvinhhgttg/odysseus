@@ -24,6 +24,7 @@ from core.database import (  # explicit re-exports for IDE/type-checker visibili
     ScheduledTask,
     TaskRun,
     Memory,
+    ToolApprovalRecord,
     init_db,
     get_db,
     get_db_session,

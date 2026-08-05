@@ -1725,6 +1725,45 @@ class CalendarDeletedEvent(TimestampMixin, Base):
     last_error = Column(Text, nullable=True)
 
 
+
+class ToolApprovalRecord(Base):
+    """Persistent one-shot authorization for one exact tool invocation."""
+
+    __tablename__ = "tool_approvals"
+
+    id = Column(String, primary_key=True)
+    owner = Column(String, nullable=False)
+    session_id = Column(String, nullable=False)
+    run_id = Column(String, nullable=False)
+    tool_name = Column(String, nullable=False)
+    risk = Column(String, nullable=False)
+    argument_hash = Column(String, nullable=False)
+    fingerprint = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    created_at = Column(DateTime, nullable=False, default=utcnow_naive)
+    expires_at = Column(DateTime, nullable=False)
+    decided_at = Column(DateTime, nullable=True)
+    consumed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_tool_approvals_owner_session_status",
+            "owner",
+            "session_id",
+            "status",
+        ),
+        Index(
+            "ix_tool_approvals_status_expires",
+            "status",
+            "expires_at",
+        ),
+        Index(
+            "ix_tool_approvals_fingerprint",
+            "fingerprint",
+        ),
+    )
+
+
 class Integration(TimestampMixin, Base):
     """An external service connection (email, RSS, webhook, etc.)."""
     __tablename__ = "integrations"
