@@ -14,10 +14,16 @@ from src.tool_risk import (
     [
         ("read_file", ToolRisk.READ_ONLY),
         ("glob", ToolRisk.READ_ONLY),
+        ("ask_user", ToolRisk.READ_ONLY),
+        ("tail_serve_output", ToolRisk.READ_ONLY),
         ("write_file", ToolRisk.LOCAL_WRITE),
         ("manage_memory", ToolRisk.LOCAL_WRITE),
+        ("update_plan", ToolRisk.LOCAL_WRITE),
+        ("ui_control", ToolRisk.LOCAL_WRITE),
         ("send_email", ToolRisk.EXTERNAL_WRITE),
+        ("builtin_browser", ToolRisk.EXTERNAL_WRITE),
         ("delete_email", ToolRisk.DESTRUCTIVE),
+        ("manage_session", ToolRisk.DESTRUCTIVE),
         ("bash", ToolRisk.HOST_CONTROL),
         ("python", ToolRisk.HOST_CONTROL),
         ("unknown_new_tool", ToolRisk.UNKNOWN),
@@ -121,3 +127,15 @@ def test_mcp_annotations_cannot_downgrade_native_host_control():
     assert assessment.risk is ToolRisk.HOST_CONTROL
     assert assessment.source == "native_registry"
     assert assessment.approval_would_be_required is True
+
+
+def test_every_known_native_tool_has_explicit_risk_classification():
+    from src.tool_policy import known_tool_names
+
+    unknown = {
+        name
+        for name in known_tool_names()
+        if classify_tool_risk(name).risk is ToolRisk.UNKNOWN
+    }
+
+    assert unknown == set()

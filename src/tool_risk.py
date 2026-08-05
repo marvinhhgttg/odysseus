@@ -47,6 +47,8 @@ READ_ONLY_TOOLS = frozenset({
     "resolve_contact",
     "chat_with_model",
     "ask_teacher",
+    "ask_user",
+    "tail_serve_output",
     "vault_search",
     "vault_get",
 })
@@ -70,6 +72,8 @@ LOCAL_WRITE_TOOLS = frozenset({
     "edit_image",
     "trigger_research",
     "manage_research",
+    "update_plan",
+    "ui_control",
     "draft_email",
     "draft_email_reply",
     "ai_draft_email_reply",
@@ -77,6 +81,7 @@ LOCAL_WRITE_TOOLS = frozenset({
 })
 
 EXTERNAL_WRITE_TOOLS = frozenset({
+    "builtin_browser",
     "send_email",
     "reply_to_email",
     "bulk_email",
@@ -89,6 +94,7 @@ EXTERNAL_WRITE_TOOLS = frozenset({
 
 DESTRUCTIVE_TOOLS = frozenset({
     "delete_email",
+    "manage_session",
     "cancel_download",
     "stop_served_model",
 })
