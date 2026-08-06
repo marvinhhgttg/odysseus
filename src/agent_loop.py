@@ -5,6 +5,9 @@ Streaming agent loop for odysseus-ui.
 Wraps stream_llm() with multi-round tool execution.
 The LLM decides when to use tools by writing fenced code blocks.
 """
+import uuid
+from src.tool_approval import ApprovalError
+from src.tool_approval_enforcer import ToolApprovalEnforcer
 
 import asyncio
 import collections
@@ -2567,6 +2570,9 @@ async def stream_agent_loop(
     uploaded_files: Optional[List[Dict]] = None,
     workload: str = "foreground",
     _is_teacher_run: bool = False,
+    approval_mode: bool = False,
+    run_id: Optional[str] = None,
+    approval_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -2578,6 +2584,66 @@ async def stream_agent_loop(
       - data: {"type": "metrics", "data": {...}}            (final metrics)
       - data: [DONE]                                        (end)
     """
+
+    effective_run_id = (run_id or str(uuid.uuid4())).strip()
+    approval_enforcer = ToolApprovalEnforcer() if approval_mode else None
+
+    if approval_mode and not owner:
+        payload = {
+            "type": "approval_error",
+            "error": "Authenticated owner required",
+            "runId": effective_run_id,
+        }
+        yield "data: " + json.dumps(payload) + "\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    if approval_mode and not session_id:
+        payload = {
+            "type": "approval_error",
+            "error": "Session id required",
+            "runId": effective_run_id,
+        }
+        yield "data: " + json.dumps(payload) + "\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+
+    async def _empty_agent_stream():
+        if False:
+            yield ""
+
+    resumed_tool_block = None
+    executing_resumed_approval = False
+
+    if approval_id:
+        if not approval_enforcer:
+            payload = {
+                "type": "approval_error",
+                "error": "Approval resume is disabled",
+                "runId": effective_run_id,
+            }
+            yield "data: " + json.dumps(payload) + "\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        try:
+            resumed_tool_block = approval_enforcer.resume(
+                approval_id,
+                owner=owner,
+                session_id=session_id,
+                run_id=effective_run_id,
+            )
+        except ApprovalError as exc:
+            payload = {
+                "type": "approval_error",
+                "approvalId": approval_id,
+                "runId": effective_run_id,
+                "error": str(exc),
+            }
+            yield "data: " + json.dumps(payload) + "\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
     mcp_mgr = get_mcp_manager()
     prep_timings: Dict[str, float] = {}
@@ -3372,7 +3438,10 @@ async def stream_agent_loop(
             bool(all_tool_schemas),
             agent_stream_timeout,
         )
-        async for chunk in stream_llm_with_fallback(
+        async for chunk in (
+            _empty_agent_stream()
+            if resumed_tool_block is not None
+            else stream_llm_with_fallback(
             _candidates,
             messages,
             temperature=temperature,
@@ -3383,6 +3452,7 @@ async def stream_agent_loop(
             timeout=agent_stream_timeout,
             session_id=session_id,
             workload=workload,
+        )
         ):
             if not _round_first_event_logged:
                 _round_first_event_logged = True
@@ -3768,6 +3838,15 @@ async def stream_agent_loop(
         # model with no real native_tool_calls) must not be stripped from the
         # persisted text either — otherwise it streams once and then disappears
         # on reload (#3222 follow-up).
+        # Execute exactly the persisted approved invocation.
+        if resumed_tool_block is not None:
+            tool_blocks = [resumed_tool_block]
+            used_native = False
+            native_tool_calls = []
+            converted_calls = []
+            executing_resumed_approval = True
+            resumed_tool_block = None
+
         cleaned_round = strip_tool_blocks(round_response, skip_fenced=(_is_api_model and not used_native and not guide_only)).strip()
         round_texts.append(cleaned_round)
         if _ody_qwen_finetune_model and not tool_blocks and cleaned_round:
@@ -3992,6 +4071,84 @@ async def stream_agent_loop(
                 }
                 logger.info("Tool blocked before start by policy: %s", block.tool_type)
             else:
+                # Approval boundary: stop before an unapproved high-risk invocation.
+                if (
+                    approval_enforcer is not None
+                    and not executing_resumed_approval
+                ):
+                    annotations = None
+                    if block.tool_type.startswith("mcp_") and mcp_mgr is not None:
+                        try:
+                            annotations = mcp_mgr.get_tool_annotations(
+                                block.tool_type
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Approval MCP annotation lookup failed for %s: %s",
+                                block.tool_type,
+                                exc,
+                            )
+
+                    try:
+                        approval_decision = approval_enforcer.check(
+                            block,
+                            owner=owner,
+                            session_id=session_id,
+                            run_id=effective_run_id,
+                            annotations=annotations,
+                        )
+                    except ApprovalError as exc:
+                        payload = {
+                            "type": "approval_error",
+                            "tool": block.tool_type,
+                            "runId": effective_run_id,
+                            "error": str(exc),
+                        }
+                        yield "data: " + json.dumps(payload) + "\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    except Exception:
+                        logger.exception(
+                            "Approval persistence failed for tool %s",
+                            block.tool_type,
+                        )
+                        payload = {
+                            "type": "approval_error",
+                            "tool": block.tool_type,
+                            "runId": effective_run_id,
+                            "error": "Approval could not be created",
+                        }
+                        yield "data: " + json.dumps(payload) + "\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    if approval_decision.requires_approval:
+                        payload = {
+                            "type": "approval_required",
+                            "runId": effective_run_id,
+                            "sessionId": session_id,
+                            "round": round_num,
+                            **approval_decision.approval.to_dict(),
+                        }
+                        yield "data: " + json.dumps(payload) + "\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    if approval_decision.block is None:
+                        payload = {
+                            "type": "approval_error",
+                            "tool": block.tool_type,
+                            "runId": effective_run_id,
+                            "error": (
+                                "Approval decision contained no executable block"
+                            ),
+                        }
+                        yield "data: " + json.dumps(payload) + "\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    block = approval_decision.block
+
                 yield (
                     f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "full_command": full_command, "round": round_num})}\n\n'
                 )
@@ -4358,6 +4515,8 @@ async def stream_agent_loop(
                 _ody_doc_tool_completed = True
 
         # If budget was hit, stop the loop
+        executing_resumed_approval = False  # resume execution finished
+
         if budget_hit:
             break
 

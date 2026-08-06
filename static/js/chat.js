@@ -52,6 +52,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     } catch (_) {}
   }
   let _pendingContinue = null; // Stores the stopped AI element to merge with new response
+  let _pendingApprovalResume = null; // One-shot tool approval continuation
   function _createChatSendPerf() {
     const started = (performance && performance.now) ? performance.now() : Date.now();
     let last = started;
@@ -577,6 +578,218 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
   /**
    * Handle chat form submission
    */
+
+  function _approvalErrorText(payload, fallback) {
+    if (payload && typeof payload.detail === 'string' && payload.detail.trim()) {
+      return payload.detail.trim();
+    }
+    if (payload && typeof payload.error === 'string' && payload.error.trim()) {
+      return payload.error.trim();
+    }
+    return fallback || 'Approval request failed.';
+  }
+
+  function _renderToolApproval(event, resumeMessage) {
+    const chatBox = document.getElementById('chat-history');
+    if (!chatBox) return;
+
+    const approvalId = String(event.approvalId || '').trim();
+    const runId = String(event.runId || '').trim();
+    const sessionId = String(
+      event.sessionId || sessionModule.getCurrentSessionId() || ''
+    ).trim();
+
+    if (!approvalId || !runId || !sessionId) {
+      console.error('Invalid approval request:', event);
+      if (uiModule && uiModule.showError) {
+        uiModule.showError('Invalid tool approval request.');
+      }
+      return;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'msg msg-ai approval-request';
+
+    const role = document.createElement('div');
+    role.className = 'role';
+    role.textContent = 'Approval required';
+
+    const body = document.createElement('div');
+    body.className = 'body';
+
+    const card = document.createElement('div');
+    card.className = 'approval-card';
+    card.style.cssText = [
+      'border:1px solid var(--border)',
+      'border-radius:10px',
+      'padding:12px',
+      'display:flex',
+      'flex-direction:column',
+      'gap:9px',
+      'background:rgba(127,127,127,.08)'
+    ].join(';');
+
+    const title = document.createElement('strong');
+    title.textContent = 'Allow ' + (event.tool || 'tool') + ' to run?';
+
+    const details = document.createElement('div');
+    details.style.cssText = [
+      'display:flex',
+      'gap:12px',
+      'flex-wrap:wrap',
+      'font-size:12px',
+      'opacity:.78'
+    ].join(';');
+
+    const risk = document.createElement('span');
+    risk.textContent = 'Risk: ' + (event.risk || 'unknown');
+
+    const source = document.createElement('span');
+    source.textContent = 'Source: ' + (event.source || 'policy');
+
+    details.append(risk, source);
+
+    if (event.expiresAt) {
+      const expiry = document.createElement('span');
+      expiry.textContent = 'Expires: ' + event.expiresAt;
+      details.appendChild(expiry);
+    }
+
+    const status = document.createElement('div');
+    status.className = 'approval-status';
+    status.style.cssText =
+      'min-height:16px;font-size:12px;opacity:.78';
+
+    const actions = document.createElement('div');
+    actions.style.cssText =
+      'display:flex;gap:8px;flex-wrap:wrap';
+
+    const approveButton = document.createElement('button');
+    approveButton.type = 'button';
+    approveButton.className = 'continue-btn approval-approve';
+    approveButton.textContent = 'Approve';
+
+    const rejectButton = document.createElement('button');
+    rejectButton.type = 'button';
+    rejectButton.className = 'continue-btn approval-reject';
+    rejectButton.textContent = 'Reject';
+
+    actions.append(approveButton, rejectButton);
+    card.append(title, details, status, actions);
+    body.appendChild(card);
+    wrap.append(role, body);
+    chatBox.appendChild(wrap);
+
+    const setPending = (pending, message) => {
+      approveButton.disabled = pending;
+      rejectButton.disabled = pending;
+      status.textContent = message || '';
+    };
+
+    const decide = async action => {
+      setPending(
+        true,
+        action === 'approve' ? 'Approving…' : 'Rejecting…'
+      );
+
+      try {
+        const response = await fetch(
+          API_BASE
+            + '/api/tool-approvals/'
+            + encodeURIComponent(approvalId)
+            + '/'
+            + action,
+          {
+            method: 'POST',
+            credentials: 'same-origin'
+          }
+        );
+
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_) {}
+
+        if (!response.ok) {
+          throw new Error(
+            _approvalErrorText(
+              payload,
+              'Approval request failed (' + response.status + ').'
+            )
+          );
+        }
+
+        if (action === 'reject') {
+          status.textContent = 'Rejected.';
+          card.dataset.approvalStatus = 'rejected';
+          return;
+        }
+
+        const resume = {
+          approvalId: String(
+            (payload && payload.approvalId) || approvalId
+          ).trim(),
+          runId: String(
+            (payload && payload.runId) || runId
+          ).trim(),
+          sessionId: String(
+            (payload && payload.sessionId) || sessionId
+          ).trim()
+        };
+
+        if (sessionModule.getCurrentSessionId() !== resume.sessionId) {
+          throw new Error(
+            'This approval belongs to a different chat.'
+          );
+        }
+
+        const messageInput = uiModule.el('message');
+        const submitButton = document.querySelector('.send-btn');
+
+        if (!messageInput || !submitButton) {
+          throw new Error(
+            'Could not resume the approved tool call.'
+          );
+        }
+
+        _pendingApprovalResume = resume;
+        _hideUserBubble = true;
+
+        status.textContent = 'Approved. Resuming…';
+        card.dataset.approvalStatus = 'approved';
+
+        messageInput.value =
+          resumeMessage || 'Continue the approved tool call.';
+
+        submitButton.click();
+      } catch (error) {
+        _pendingApprovalResume = null;
+        _hideUserBubble = false;
+
+        setPending(
+          false,
+          error && error.message
+            ? error.message
+            : 'Approval request failed.'
+        );
+      }
+    };
+
+    approveButton.addEventListener(
+      'click',
+      () => decide('approve')
+    );
+
+    rejectButton.addEventListener(
+      'click',
+      () => decide('reject')
+    );
+
+    if (uiModule && uiModule.scrollHistory) {
+      uiModule.scrollHistory();
+    }
+  }
+
   export async function handleChatSubmit(e) {
     e.preventDefault();
     // Cancel research clarification timeout if active
@@ -1163,9 +1376,26 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       if (_inject.prefix) _finalMsgWithInject = _inject.prefix + ' ' + _finalMsgWithInject;
       if (_inject.suffix) _finalMsgWithInject = _finalMsgWithInject + ' ' + _inject.suffix;
 
+      const _approvalResume =
+        _pendingApprovalResume &&
+        _pendingApprovalResume.sessionId === streamSessionId
+          ? _pendingApprovalResume
+          : null;
+
+      if (_pendingApprovalResume && !_approvalResume) {
+        _pendingApprovalResume = null;
+        _hideUserBubble = false;
+      }
+
       const fd = new FormData();
       fd.append('message', _finalMsgWithInject);
       fd.append('session', streamSessionId);
+
+      if (_approvalResume) {
+        fd.append('approvalId', _approvalResume.approvalId);
+        fd.append('runId', _approvalResume.runId);
+        _pendingApprovalResume = null;
+      }
       if (ids.length) fd.append('attachments', JSON.stringify(ids));
       // Auto-save & send active doc ID so the backend sees latest content
       if (documentModule && activeDocIdForSend) {
@@ -2781,6 +3011,49 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
               } else if (json.type === 'ui_control') {
                 if (_isBg) continue;
                 chatStream.handleUIControl(json.data || {});
+
+              } else if (
+                json.type === 'approval_required' ||
+                json.type === 'approvalrequired'
+              ) {
+                if (_isBg) continue;
+                _cancelThinkingTimer();
+                _removeThinkingSpinner();
+                if (spinner && spinner.element) spinner.destroy();
+
+                if (roundHolder && !roundText.trim()) {
+                  roundHolder.style.display = 'none';
+                }
+
+                const _approvalEvent =
+                  json.data && typeof json.data === 'object'
+                    ? Object.assign({}, json, json.data)
+                    : json;
+
+                _renderToolApproval(_approvalEvent, streamQuery);
+
+              } else if (
+                json.type === 'approval_error' ||
+                json.type === 'approvalerror'
+              ) {
+                if (_isBg) continue;
+                _cancelThinkingTimer();
+                _removeThinkingSpinner();
+                if (spinner && spinner.element) spinner.destroy();
+
+                const _approvalError =
+                  json.data && typeof json.data === 'object'
+                    ? Object.assign({}, json, json.data)
+                    : json;
+
+                if (uiModule && uiModule.showError) {
+                  uiModule.showError(
+                    _approvalErrorText(
+                      _approvalError,
+                      'The approval could not be processed.'
+                    )
+                  );
+                }
 
               } else if (json.type === 'ask_user') {
                 if (_isBg) continue;

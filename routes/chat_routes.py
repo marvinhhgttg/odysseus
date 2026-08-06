@@ -17,6 +17,8 @@ from core.models import ChatMessage
 from src.request_models import ChatRequest
 from src.llm_core import llm_call_async, stream_llm, stream_llm_with_fallback
 from src.agent_loop import stream_agent_loop
+from src.tool_approval import ApprovalError
+from src.tool_approval_store import ToolApprovalStore
 from src import agent_runs
 from src.model_context import estimate_tokens
 from src.chat_helpers import coerce_message_and_session
@@ -24,7 +26,7 @@ from src.endpoint_resolver import normalize_base as _normalize_base, build_chat_
 from src.session_search import search_session_messages
 from src.prompt_security import untrusted_context_message
 from core.exceptions import SessionNotFoundError
-from src.auth_helpers import effective_user, get_current_user
+from src.auth_helpers import effective_user, get_current_user, require_user
 from routes.session_routes import _verify_session_owner
 from routes.document_helpers import _owner_session_filter
 from core.database import SessionLocal, get_session_mode, set_session_mode
@@ -419,6 +421,76 @@ def setup_chat_routes(
 ) -> APIRouter:
     router = APIRouter(tags=["chat"])
 
+    # Persistent owner-scoped store for one-shot tool approvals.
+    tool_approval_store = ToolApprovalStore()
+
+    def _approval_response(approval) -> Dict[str, str]:
+        """Serialize only lifecycle metadata safe for the browser."""
+        return {
+            "approvalId": approval.id,
+            "sessionId": approval.session_id,
+            "runId": approval.run_id,
+            "status": approval.status.value,
+            "expiresAt": approval.expires_at.isoformat(),
+        }
+
+    def _decide_tool_approval(
+        request: Request,
+        approval_id: str,
+        *,
+        approve: bool,
+    ) -> Dict[str, str]:
+        owner = require_user(request)
+        try:
+            if approve:
+                approval = tool_approval_store.approve(
+                    approval_id,
+                    owner=owner,
+                )
+            else:
+                approval = tool_approval_store.reject(
+                    approval_id,
+                    owner=owner,
+                )
+        except ApprovalError as exc:
+            # Use one status for unavailable, expired, and invalid transitions.
+            # This avoids exposing another owner's approval existence.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        return _approval_response(approval)
+
+    # ------------------------------------------------------------------ #
+    # POST /api/tool-approvals/{approval_id}/approve
+    # POST /api/tool-approvals/{approval_id}/reject
+    # ------------------------------------------------------------------ #
+    @router.post(
+        "/api/tool-approvals/{approval_id}/approve",
+        response_model=Dict[str, str],
+    )
+    async def approve_tool_call(
+        request: Request,
+        approval_id: str,
+    ) -> Dict[str, str]:
+        return _decide_tool_approval(
+            request,
+            approval_id,
+            approve=True,
+        )
+
+    @router.post(
+        "/api/tool-approvals/{approval_id}/reject",
+        response_model=Dict[str, str],
+    )
+    async def reject_tool_call(
+        request: Request,
+        approval_id: str,
+    ) -> Dict[str, str]:
+        return _decide_tool_approval(
+            request,
+            approval_id,
+            approve=False,
+        )
+
     # ------------------------------------------------------------------ #
     # POST /api/chat (non-streaming)
     # ------------------------------------------------------------------ #
@@ -556,6 +628,30 @@ def setup_chat_routes(
         use_research = form_data.get("use_research")
         time_filter = form_data.get("time_filter")
         preset_id = form_data.get("preset_id")
+
+        # Resume only the exact approval and run emitted previously.
+        _json_body = body if isinstance(body, dict) else {}
+        approval_id = str(
+            form_data.get("approvalId")
+            or form_data.get("approval_id")
+            or _json_body.get("approvalId")
+            or _json_body.get("approval_id")
+            or ""
+        ).strip()
+        approval_run_id = str(
+            form_data.get("runId")
+            or form_data.get("run_id")
+            or _json_body.get("runId")
+            or _json_body.get("run_id")
+            or ""
+        ).strip()
+
+        if bool(approval_id) != bool(approval_run_id):
+            raise HTTPException(
+                status_code=400,
+                detail="approvalId and runId must be provided together",
+            )
+
         # Issue #3229: API callers send JSON, not FormData.  Read from the
         # JSON body as fallback so callers who send {"allow_bash": true}
         # actually get bash enabled.
@@ -1429,6 +1525,9 @@ def setup_chat_routes(
                         workspace=workspace or None,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
+                        approval_mode=True,
+                        run_id=approval_run_id or None,
+                        approval_id=approval_id or None,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
@@ -1453,6 +1552,8 @@ def setup_chat_routes(
                                     "rounds_exhausted",
                                     "ask_user",
                                     "plan_update",
+                                    "approval_required",
+                                    "approval_error",
                                 ):
                                     if data.get("type") == "agent_step":
                                         _agent_rounds = max(_agent_rounds, data.get("round", 1))
