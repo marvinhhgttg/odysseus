@@ -268,3 +268,21 @@ def test_target_does_not_mutate_session_headers(monkeypatch):
     target.headers["X-Test"] = "changed"
 
     assert original == {"Authorization": "session"}
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("route research Erkläre mir das Thema.", ROUTE_RESEARCH),
+        ("route: research Erkläre mir das Thema.", ROUTE_RESEARCH),
+        ("/route research Erkläre mir das Thema.", ROUTE_RESEARCH),
+        ("route standard Recherchiere aktuelle Quellen.", ROUTE_STANDARD),
+        ("route coding Recherchiere diesen Fehler.", ROUTE_CODING),
+        ("route tool-utility Extrahiere Daten.", ROUTE_TOOL_UTILITY),
+        ("route tool utility Extrahiere Daten.", ROUTE_TOOL_UTILITY),
+    ],
+)
+def test_explicit_route_variants(message, expected):
+    decision = classify_model_route(message)
+    assert decision.route == expected
+    assert decision.reason == "explicit_route"
+    assert decision.confidence == 1.0

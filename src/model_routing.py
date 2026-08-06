@@ -20,7 +20,7 @@ VALID_ROUTES: Final = frozenset(
 )
 
 _EXPLICIT_ROUTE_RE = re.compile(
-    r"^\s*(?:/route|route:)\s*"
+    r"^\s*(?:/route|route(?:\s*:)?)\s+"
     r"(standard|research|coding|tool[_ -]?utility)\b",
     re.IGNORECASE,
 )
