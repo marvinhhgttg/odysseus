@@ -123,6 +123,34 @@ _RECENT_WEB_CONTEXT_RE = re.compile(
 )
 
 
+def _restore_approval_resume_request(
+    messages: List[Dict[str, Any]],
+    resume_message: str,
+) -> List[Dict[str, Any]]:
+    """Drop the synthetic resume turn when the original request is present."""
+    repaired = list(messages)
+    current = str(resume_message or "").strip()
+    if not current:
+        return repaired
+
+    user_indexes = [
+        index
+        for index, item in enumerate(repaired)
+        if item.get("role") == "user"
+    ]
+    if len(user_indexes) < 2:
+        return repaired
+
+    latest_index = user_indexes[-1]
+    latest_content = str(
+        repaired[latest_index].get("content") or ""
+    ).strip()
+    if latest_content == current:
+        del repaired[latest_index]
+
+    return repaired
+
+
 def _recent_session_text(sess, limit: int = 8, max_chars: int = 2000) -> str:
     history = getattr(sess, "history", None) or getattr(sess, "_history", None) or []
     chunks: List[str] = []
@@ -434,6 +462,18 @@ def setup_chat_routes(
             "expiresAt": approval.expires_at.isoformat(),
         }
 
+    def _approval_recovery_response(approval) -> Dict[str, str]:
+        """Serialize reload-safe metadata without invocation arguments."""
+        return {
+            "approvalId": approval.id,
+            "sessionId": approval.session_id,
+            "runId": approval.run_id,
+            "tool": approval.tool_name,
+            "risk": approval.risk,
+            "status": approval.status.value,
+            "expiresAt": approval.expires_at.isoformat(),
+        }
+
     def _decide_tool_approval(
         request: Request,
         approval_id: str,
@@ -458,6 +498,35 @@ def setup_chat_routes(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         return _approval_response(approval)
+
+    # ------------------------------------------------------------------ #
+    # GET /api/tool-approvals?sessionId=...
+    # ------------------------------------------------------------------ #
+    @router.get(
+        "/api/tool-approvals",
+        response_model=Dict[str, Any],
+    )
+    async def list_tool_approvals(
+        request: Request,
+        session_id: str = Query(..., alias="sessionId"),
+    ) -> Dict[str, Any]:
+        owner = require_user(request)
+        _verify_session_owner(request, session_id)
+
+        try:
+            approvals = tool_approval_store.list_for_session(
+                owner=owner,
+                session_id=session_id,
+            )
+        except ApprovalError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        return {
+            "approvals": [
+                _approval_recovery_response(approval)
+                for approval in approvals
+            ]
+        }
 
     # ------------------------------------------------------------------ #
     # POST /api/tool-approvals/{approval_id}/approve
@@ -1262,6 +1331,11 @@ def setup_chat_routes(
                     return
 
             messages = _ensure_current_request_is_latest_user(ctx.messages, message)
+            if approval_id:
+                messages = _restore_approval_resume_request(
+                    messages,
+                    message,
+                )
 
             # Auto-compact notification
             if ctx.was_compacted:

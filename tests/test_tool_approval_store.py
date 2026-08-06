@@ -401,3 +401,125 @@ def test_tool_content_migration_is_idempotent(tmp_path):
         assert "tool_content" in columns
     finally:
         legacy_engine.dispose()
+
+
+def test_list_for_session_is_owner_and_session_scoped(store):
+    pending = store.create(
+        make_approval(),
+        tool_content=TOOL_CONTENT,
+    )
+    approved = store.create(
+        make_approval(run_id="run-2"),
+        tool_content=TOOL_CONTENT,
+    )
+    store.approve(
+        approved.id,
+        owner="marc",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    store.create(
+        make_approval(session_id="session-2", run_id="run-3"),
+        tool_content=TOOL_CONTENT,
+    )
+    store.create(
+        make_approval(owner="other", run_id="run-4"),
+        tool_content=TOOL_CONTENT,
+    )
+
+    found = store.list_for_session(
+        owner="marc",
+        session_id="session-1",
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert {approval.id for approval in found} == {
+        pending.id,
+        approved.id,
+    }
+    assert {
+        approval.id: approval.status
+        for approval in found
+    } == {
+        pending.id: ApprovalStatus.PENDING,
+        approved.id: ApprovalStatus.APPROVED,
+    }
+
+
+def test_list_for_session_expires_stale_active_rows(store):
+    pending = store.create(
+        make_approval(),
+        tool_content=TOOL_CONTENT,
+    )
+    approved = store.create(
+        make_approval(run_id="run-2"),
+        tool_content=TOOL_CONTENT,
+    )
+    store.approve(
+        approved.id,
+        owner="marc",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    found = store.list_for_session(
+        owner="marc",
+        session_id="session-1",
+        now=NOW + timedelta(minutes=10),
+    )
+
+    assert found == []
+    assert store.get(
+        pending.id,
+        owner="marc",
+    ).status is ApprovalStatus.EXPIRED
+    assert store.get(
+        approved.id,
+        owner="marc",
+    ).status is ApprovalStatus.EXPIRED
+
+
+def test_list_for_session_omits_terminal_states(store):
+    rejected = store.create(
+        make_approval(),
+        tool_content=TOOL_CONTENT,
+    )
+    store.reject(
+        rejected.id,
+        owner="marc",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    consumed = store.create(
+        make_approval(run_id="run-2"),
+        tool_content=TOOL_CONTENT,
+    )
+    store.approve(
+        consumed.id,
+        owner="marc",
+        now=NOW + timedelta(seconds=1),
+    )
+    store.consume(
+        consumed.id,
+        owner="marc",
+        session_id="session-1",
+        run_id="run-2",
+        tool_name="bash",
+        risk="host_control",
+        arguments=TOOL_CONTENT,
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert store.list_for_session(
+        owner="marc",
+        session_id="session-1",
+        now=NOW + timedelta(seconds=3),
+    ) == []
+
+
+def test_list_for_session_rejects_empty_binding(store):
+    with pytest.raises(ApprovalError, match="required"):
+        store.list_for_session(
+            owner="marc",
+            session_id=" ",
+            now=NOW,
+        )

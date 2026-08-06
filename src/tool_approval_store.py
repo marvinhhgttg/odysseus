@@ -193,6 +193,63 @@ class ToolApprovalStore:
         finally:
             db.close()
 
+    def list_for_session(
+        self,
+        *,
+        owner: str,
+        session_id: str,
+        now: datetime | None = None,
+    ) -> list[ToolApproval]:
+        """Return active approvals bound to one owner and chat session."""
+        normalized_owner = owner.strip()
+        normalized_session = session_id.strip()
+        if not normalized_owner or not normalized_session:
+            raise ApprovalError("owner and session id are required")
+
+        checked = now or utcnow()
+        checked_db = _to_db_time(checked)
+        active_statuses = (
+            ApprovalStatus.PENDING.value,
+            ApprovalStatus.APPROVED.value,
+        )
+        db = self._session_factory()
+
+        try:
+            # Expire all stale active rows for this exact owner/session
+            # binding in one database update before reading survivors.
+            db.execute(
+                update(ToolApprovalRecord)
+                .where(
+                    ToolApprovalRecord.owner == normalized_owner,
+                    ToolApprovalRecord.session_id == normalized_session,
+                    ToolApprovalRecord.status.in_(active_statuses),
+                    ToolApprovalRecord.expires_at <= checked_db,
+                )
+                .values(status=ApprovalStatus.EXPIRED.value)
+            )
+            db.commit()
+
+            rows = (
+                db.query(ToolApprovalRecord)
+                .filter(
+                    ToolApprovalRecord.owner == normalized_owner,
+                    ToolApprovalRecord.session_id == normalized_session,
+                    ToolApprovalRecord.status.in_(active_statuses),
+                    ToolApprovalRecord.expires_at > checked_db,
+                )
+                .order_by(
+                    ToolApprovalRecord.created_at.asc(),
+                    ToolApprovalRecord.id.asc(),
+                )
+                .all()
+            )
+            return [_to_domain(row) for row in rows]
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def approve(
         self,
         approval_id: str,

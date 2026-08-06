@@ -589,26 +589,45 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     return fallback || 'Approval request failed.';
   }
 
+  function _findToolApprovalCard(approvalId) {
+    const wanted = String(approvalId || '').trim();
+    if (!wanted) return null;
+
+    return Array.from(
+      document.querySelectorAll('.approval-request[data-approval-id]')
+    ).find(element => element.dataset.approvalId === wanted) || null;
+  }
+
   function _renderToolApproval(event, resumeMessage) {
     const chatBox = document.getElementById('chat-history');
-    if (!chatBox) return;
+    if (!chatBox || !event || typeof event !== 'object') return null;
 
     const approvalId = String(event.approvalId || '').trim();
     const runId = String(event.runId || '').trim();
     const sessionId = String(
       event.sessionId || sessionModule.getCurrentSessionId() || ''
     ).trim();
+    const initialStatus = String(event.status || 'pending')
+      .trim()
+      .toLowerCase();
 
-    if (!approvalId || !runId || !sessionId) {
+    if (
+      !approvalId ||
+      !runId ||
+      !sessionId ||
+      !['pending', 'approved'].includes(initialStatus)
+    ) {
       console.error('Invalid approval request:', event);
-      if (uiModule && uiModule.showError) {
-        uiModule.showError('Invalid tool approval request.');
-      }
-      return;
+      return null;
     }
+
+    const existing = _findToolApprovalCard(approvalId);
+    if (existing) return existing;
 
     const wrap = document.createElement('div');
     wrap.className = 'msg msg-ai approval-request';
+    wrap.dataset.approvalId = approvalId;
+    wrap.dataset.approvalStatus = initialStatus;
 
     const role = document.createElement('div');
     role.className = 'role';
@@ -619,6 +638,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
     const card = document.createElement('div');
     card.className = 'approval-card';
+    card.dataset.approvalStatus = initialStatus;
     card.style.cssText = [
       'border:1px solid var(--border)',
       'border-radius:10px',
@@ -630,7 +650,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     ].join(';');
 
     const title = document.createElement('strong');
-    title.textContent = 'Allow ' + (event.tool || 'tool') + ' to run?';
+    title.textContent =
+      'Allow ' + String(event.tool || 'tool') + ' to run?';
 
     const details = document.createElement('div');
     details.style.cssText = [
@@ -642,16 +663,16 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     ].join(';');
 
     const risk = document.createElement('span');
-    risk.textContent = 'Risk: ' + (event.risk || 'unknown');
+    risk.textContent = 'Risk: ' + String(event.risk || 'unknown');
 
     const source = document.createElement('span');
-    source.textContent = 'Source: ' + (event.source || 'policy');
+    source.textContent = 'Source: ' + String(event.source || 'policy');
 
     details.append(risk, source);
 
     if (event.expiresAt) {
       const expiry = document.createElement('span');
-      expiry.textContent = 'Expires: ' + event.expiresAt;
+      expiry.textContent = 'Expires: ' + String(event.expiresAt);
       details.appendChild(expiry);
     }
 
@@ -667,23 +688,58 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     const approveButton = document.createElement('button');
     approveButton.type = 'button';
     approveButton.className = 'continue-btn approval-approve';
-    approveButton.textContent = 'Approve';
 
     const rejectButton = document.createElement('button');
     rejectButton.type = 'button';
     rejectButton.className = 'continue-btn approval-reject';
     rejectButton.textContent = 'Reject';
 
-    actions.append(approveButton, rejectButton);
-    card.append(title, details, status, actions);
-    body.appendChild(card);
-    wrap.append(role, body);
-    chatBox.appendChild(wrap);
-
     const setPending = (pending, message) => {
       approveButton.disabled = pending;
       rejectButton.disabled = pending;
       status.textContent = message || '';
+    };
+
+    const startResume = payload => {
+      const resume = {
+        approvalId: String(
+          (payload && payload.approvalId) || approvalId
+        ).trim(),
+        runId: String(
+          (payload && payload.runId) || runId
+        ).trim(),
+        sessionId: String(
+          (payload && payload.sessionId) || sessionId
+        ).trim()
+      };
+
+      if (sessionModule.getCurrentSessionId() !== resume.sessionId) {
+        throw new Error(
+          'This approval belongs to a different chat.'
+        );
+      }
+
+      const messageInput = uiModule.el('message');
+      const submitButton = document.querySelector('.send-btn');
+
+      if (!messageInput || !submitButton) {
+        throw new Error(
+          'Could not resume the approved tool call.'
+        );
+      }
+
+      _pendingApprovalResume = resume;
+      _hideUserBubble = true;
+
+      wrap.dataset.approvalStatus = 'approved';
+      card.dataset.approvalStatus = 'approved';
+      status.textContent = 'Approved. Resuming…';
+      actions.replaceChildren();
+
+      messageInput.value =
+        resumeMessage || 'Continue the approved tool call.';
+
+      submitButton.click();
     };
 
     const decide = async action => {
@@ -720,48 +776,14 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         }
 
         if (action === 'reject') {
-          status.textContent = 'Rejected.';
+          wrap.dataset.approvalStatus = 'rejected';
           card.dataset.approvalStatus = 'rejected';
+          status.textContent = 'Rejected.';
+          actions.replaceChildren();
           return;
         }
 
-        const resume = {
-          approvalId: String(
-            (payload && payload.approvalId) || approvalId
-          ).trim(),
-          runId: String(
-            (payload && payload.runId) || runId
-          ).trim(),
-          sessionId: String(
-            (payload && payload.sessionId) || sessionId
-          ).trim()
-        };
-
-        if (sessionModule.getCurrentSessionId() !== resume.sessionId) {
-          throw new Error(
-            'This approval belongs to a different chat.'
-          );
-        }
-
-        const messageInput = uiModule.el('message');
-        const submitButton = document.querySelector('.send-btn');
-
-        if (!messageInput || !submitButton) {
-          throw new Error(
-            'Could not resume the approved tool call.'
-          );
-        }
-
-        _pendingApprovalResume = resume;
-        _hideUserBubble = true;
-
-        status.textContent = 'Approved. Resuming…';
-        card.dataset.approvalStatus = 'approved';
-
-        messageInput.value =
-          resumeMessage || 'Continue the approved tool call.';
-
-        submitButton.click();
+        startResume(payload);
       } catch (error) {
         _pendingApprovalResume = null;
         _hideUserBubble = false;
@@ -775,18 +797,118 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
     };
 
-    approveButton.addEventListener(
-      'click',
-      () => decide('approve')
-    );
+    if (initialStatus === 'approved') {
+      status.textContent = 'Approved. Ready to resume.';
+      approveButton.textContent = 'Resume';
 
-    rejectButton.addEventListener(
-      'click',
-      () => decide('reject')
-    );
+      approveButton.addEventListener('click', () => {
+        try {
+          approveButton.disabled = true;
+          status.textContent = 'Approved. Resuming…';
+          startResume(event);
+        } catch (error) {
+          _pendingApprovalResume = null;
+          _hideUserBubble = false;
+          approveButton.disabled = false;
+          status.textContent =
+            error && error.message
+              ? error.message
+              : 'Could not resume the approved tool call.';
+        }
+      });
+
+      actions.appendChild(approveButton);
+    } else {
+      approveButton.textContent = 'Approve';
+      approveButton.addEventListener(
+        'click',
+        () => decide('approve')
+      );
+      rejectButton.addEventListener(
+        'click',
+        () => decide('reject')
+      );
+      actions.append(approveButton, rejectButton);
+    }
+
+    card.append(title, details, status, actions);
+    body.appendChild(card);
+    wrap.append(role, body);
+    chatBox.appendChild(wrap);
 
     if (uiModule && uiModule.scrollHistory) {
       uiModule.scrollHistory();
+    }
+
+    return wrap;
+  }
+
+  export async function recoverToolApprovals(sessionId) {
+    const requestedSessionId = String(sessionId || '').trim();
+    if (!requestedSessionId) return;
+
+    try {
+      const url = new URL(API_BASE + '/api/tool-approvals');
+      url.searchParams.set('sessionId', requestedSessionId);
+
+      const response = await fetch(url.toString(), {
+        credentials: 'same-origin'
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (_) {}
+
+      if (!response.ok) {
+        throw new Error(
+          _approvalErrorText(
+            payload,
+            'Approval recovery failed ('
+              + response.status
+              + ').'
+          )
+        );
+      }
+
+      if (
+        sessionModule.getCurrentSessionId()
+        !== requestedSessionId
+      ) {
+        return;
+      }
+
+      const approvals =
+        payload && Array.isArray(payload.approvals)
+          ? payload.approvals
+          : [];
+
+      for (const approval of approvals) {
+        if (
+          sessionModule.getCurrentSessionId()
+          !== requestedSessionId
+        ) {
+          return;
+        }
+
+        if (
+          !approval ||
+          approval.sessionId !== requestedSessionId ||
+          !['pending', 'approved'].includes(approval.status)
+        ) {
+          continue;
+        }
+
+        _renderToolApproval(
+          {
+            ...approval,
+            source: 'recovered'
+          },
+          'Continue the approved tool call.'
+        );
+      }
+    } catch (error) {
+      console.warn('Tool approval recovery failed:', error);
     }
   }
 
@@ -5669,6 +5791,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     hideWelcomeScreen: chatRenderer.hideWelcomeScreen,
     showWelcomeScreen: chatRenderer.showWelcomeScreen,
     checkPendingResearch,
+    recoverToolApprovals,
     getImageCost: chatRenderer.getImageCost,
     setDisplayOverride,
     setHideUserBubble,
