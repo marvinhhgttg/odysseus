@@ -163,3 +163,73 @@ def classify_model_route(message: str) -> RouteDecision:
         reason=f"deterministic_{route}",
         confidence=min(0.95, 0.65 + (score * 0.05)),
     )
+
+
+@dataclass(frozen=True)
+class ModelRouteTarget:
+    endpoint_url: str
+    model: str
+    headers: dict
+    fallback_candidates: tuple
+    decision: RouteDecision
+
+
+def resolve_model_route_target(
+    message: str,
+    session_endpoint_url: str,
+    session_model: str,
+    session_headers: dict | None,
+    owner: str | None = None,
+) -> ModelRouteTarget:
+    """Resolve a temporary per-request model target without mutating a session."""
+    decision = classify_model_route(message)
+    endpoint_url = session_endpoint_url
+    model = session_model
+    headers = dict(session_headers or {})
+
+    specialized_prefix = {
+        ROUTE_RESEARCH: "research",
+        ROUTE_TOOL_UTILITY: "utility",
+        ROUTE_CODING: "task",
+    }.get(decision.route)
+
+    if specialized_prefix:
+        try:
+            from src.endpoint_resolver import resolve_endpoint
+
+            endpoint_url, model, headers = resolve_endpoint(
+                specialized_prefix,
+                fallback_url=session_endpoint_url,
+                fallback_model=session_model,
+                fallback_headers=headers,
+                owner=owner,
+            )
+        except Exception:
+            endpoint_url = session_endpoint_url
+            model = session_model
+            headers = dict(session_headers or {})
+
+    try:
+        from src.endpoint_resolver import (
+            resolve_chat_fallback_candidates,
+            resolve_utility_fallback_candidates,
+        )
+
+        if specialized_prefix:
+            fallback_candidates = tuple(
+                resolve_utility_fallback_candidates(owner=owner) or ()
+            )
+        else:
+            fallback_candidates = tuple(
+                resolve_chat_fallback_candidates(owner=owner) or ()
+            )
+    except Exception:
+        fallback_candidates = ()
+
+    return ModelRouteTarget(
+        endpoint_url=endpoint_url or session_endpoint_url,
+        model=model or session_model,
+        headers=dict(headers or {}),
+        fallback_candidates=fallback_candidates,
+        decision=decision,
+    )

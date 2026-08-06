@@ -1347,25 +1347,27 @@ def setup_chat_routes(
             thinking_response = ""
             last_metrics = None
 
-            # Configured fallback chain for the default chat model. Tried in
-            # order if the session's primary model fails before producing
-            # output. Resolved once per request.
-            try:
-                from src.endpoint_resolver import resolve_chat_fallback_candidates
-                _fallback_candidates = resolve_chat_fallback_candidates(owner=_user)
-            except Exception:
-                _fallback_candidates = []
-
-            # Send model name early so the frontend can show it during streaming
-            _model_suffix = "Research" if effective_do_research else None
-            _model_info = {"type": "model_info", "model": sess.model}
-            if _model_suffix:
-                _model_info["suffix"] = _model_suffix
-            if ctx.preset.character_name:
-                _model_info["character_name"] = ctx.preset.character_name
-            yield f'data: {json.dumps(_model_info)}\n\n'
+            # Routing is resolved after image-generation handling below.
+            # Keep session values here for special paths that own their model.
+            _route_endpoint_url = sess.endpoint_url
+            _route_model = sess.model
+            _route_headers = dict(sess.headers or {})
+            _route_name = "standard"
+            _fallback_candidates = []
 
             if _is_image_generation_session(sess, owner=_user):
+                # Image generation owns its model selection and does not use
+                # per-request text-model routing.
+                _model_info = {
+                    "type": "model_info",
+                    "model": sess.model,
+                }
+                if ctx.preset.character_name:
+                    _model_info["character_name"] = (
+                        ctx.preset.character_name
+                    )
+                yield f'data: {json.dumps(_model_info)}\n\n'
+
                 from src.settings import get_setting
                 if tool_policy.blocks("generate_image"):
                     _blocked_msg = tool_policy.reason_for("generate_image")
@@ -1404,14 +1406,49 @@ def setup_chat_routes(
                 yield "data: [DONE]\n\n"
                 _active_streams.pop(session, None)
                 return
-            elif chat_mode == "chat":
+            else:
+                from src.model_routing import resolve_model_route_target
+
+                _routing_message = _last_user_plain_text(messages) or message
+                _route_target = resolve_model_route_target(
+                    _routing_message,
+                    sess.endpoint_url,
+                    sess.model,
+                    sess.headers,
+                    owner=_user,
+                )
+                _route_endpoint_url = _route_target.endpoint_url
+                _route_model = _route_target.model
+                _route_headers = _route_target.headers
+                _route_name = _route_target.decision.route
+                _fallback_candidates = list(
+                    _route_target.fallback_candidates
+                )
+
+                # Report the temporary request target without changing the
+                # model stored on the session.
+                _model_info = {
+                    "type": "model_info",
+                    "model": _route_model,
+                    "requested_model": sess.model,
+                    "route": _route_name,
+                }
+                if ctx.preset.character_name:
+                    _model_info["character_name"] = (
+                        ctx.preset.character_name
+                    )
+                yield f'data: {json.dumps(_model_info)}\n\n'
+
+            if chat_mode == "chat":
                 _chat_start = time.time()
                 _answered_by = None  # set if the selected model failed and a fallback answered
-                _requested_model = sess.model
+                _requested_model = _route_model
                 _actual_model = None
                 # ── Chat mode: call stream_llm directly, NO tools, NO document access ──
                 try:
-                    _chat_candidates = [(sess.endpoint_url, sess.model, sess.headers)] + _fallback_candidates
+                    _chat_candidates = [
+                        (_route_endpoint_url, _route_model, _route_headers)
+                    ] + _fallback_candidates
                     async for chunk in stream_llm_with_fallback(
                         _chat_candidates,
                         messages,
@@ -1551,7 +1588,7 @@ def setup_chat_routes(
                 _agent_rounds = 0
                 _agent_tool_calls = 0
                 _answered_by = None  # set if the selected model failed and a fallback answered
-                _requested_model = sess.model
+                _requested_model = _route_model
                 _actual_model = None
                 try:
                     from src.settings import get_setting
@@ -1577,10 +1614,10 @@ def setup_chat_routes(
                         _forced_tools = set(WEB_TOOL_NAMES)
 
                     async for chunk in stream_agent_loop(
-                        sess.endpoint_url,
-                        sess.model,
+                        _route_endpoint_url,
+                        _route_model,
                         messages,
-                        headers=sess.headers,
+                        headers=_route_headers,
                         temperature=ctx.preset.temperature,
                         max_tokens=ctx.preset.max_tokens,
                         prompt_type=preset_id,
