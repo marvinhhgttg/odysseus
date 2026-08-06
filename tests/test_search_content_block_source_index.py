@@ -59,3 +59,45 @@ def test_redirected_fetch_keeps_its_source_index(core, monkeypatch):
     monkeypatch.setattr(core, "fetch_webpage_content", fetch)
     out = core.comprehensive_web_search("test query", max_pages=2, max_workers=2)
     assert "[CONTENT 2] From: http://final.example/landing" in out
+
+
+def test_structured_sources_retain_provider_snippets(core, monkeypatch):
+    monkeypatch.setattr(core, "fetch_webpage_content", _fake_fetch_delaying_first)
+
+    _out, sources = core.comprehensive_web_search(
+        "test query",
+        max_pages=2,
+        max_workers=2,
+        return_sources=True,
+    )
+
+    assert sources[0]["url"] == "http://one.example/a"
+    assert sources[0]["title"] == "One"
+    assert sources[0]["snippet"] == "s1"
+    assert sources[1]["snippet"] == "s2"
+
+
+def test_fetched_evidence_is_attached_by_source_index(core, monkeypatch):
+    def fetch(url, timeout=8, retry_attempt=0):
+        if "one.example" in url:
+            time.sleep(0.2)
+        return {
+            "success": True,
+            "url": url,
+            "title": "Fetched title",
+            "content": f"Evidence belonging specifically to {url}.",
+        }
+
+    monkeypatch.setattr(core, "fetch_webpage_content", fetch)
+
+    _out, sources = core.comprehensive_web_search(
+        "test query",
+        max_pages=2,
+        max_workers=2,
+        return_sources=True,
+    )
+
+    assert "one.example/a" in sources[0]["evidence"]
+    assert "two.example/b" in sources[1]["evidence"]
+    assert "two.example/b" not in sources[0]["evidence"]
+    assert "one.example/a" not in sources[1]["evidence"]

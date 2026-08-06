@@ -350,9 +350,16 @@ def comprehensive_web_search(
         msg = "No suitable results after applying filters."
         return (msg, []) if return_sources else msg
 
-    # Build sources list for the frontend (before content fetching)
+    # Build structured sources for both the frontend and claim-level
+    # grounding. Keep the provider snippet as evidence instead of reducing
+    # each source to title+URL; otherwise a topic page can be cited for an
+    # unrelated model-generated claim with no way to detect the mismatch.
     _source_list = [
-        {"url": r.get("url", ""), "title": r.get("title", "")}
+        {
+            "url": r.get("url", ""),
+            "title": r.get("title", ""),
+            "snippet": str(r.get("snippet", "") or "")[:1000],
+        }
         for r in search_results if r.get("url")
     ]
 
@@ -383,6 +390,19 @@ def comprehensive_web_search(
                 logger.error(f"Exception while fetching {url}: {str(e)}")
 
     logger.info(f"Successfully fetched content from {len(fetched_content)} pages")
+
+    # Attach fetched evidence to the same numbered structured source. The
+    # source_index was recorded from the requested URL before parallel fetch
+    # completion and therefore remains stable across redirects and ordering.
+    for content in fetched_content:
+        source_index = content.get("source_index")
+        if not isinstance(source_index, int):
+            continue
+        if not (1 <= source_index <= len(_source_list)):
+            continue
+        evidence = str(content.get("content", "") or "").strip()
+        if evidence:
+            _source_list[source_index - 1]["evidence"] = evidence[:3000]
 
     # Format results
     output_parts = []

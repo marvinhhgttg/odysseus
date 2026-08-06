@@ -46,6 +46,362 @@ from src.agent_tools import (
 logger = logging.getLogger(__name__)
 
 
+_WEB_GROUNDING_FALLBACK = (
+    "Die Websuchergebnisse enthalten nicht genügend ausdrücklich belegte "
+    "Informationen für eine verlässliche Meldung."
+)
+
+
+def _normalize_grounding_text(value: object) -> str:
+    """Normalize evidence for conservative case-insensitive matching."""
+    return re.sub(r"\s+", " ", str(value or "")).casefold().strip()
+
+
+def _source_grounding_text(source: Dict) -> str:
+    """Return only claim-bearing fields; URL alone is never evidence."""
+    return _normalize_grounding_text(" ".join(
+        str(source.get(key) or "")
+        for key in ("title", "snippet", "evidence")
+    ))
+
+
+def _concrete_grounding_terms(text: str) -> list[str]:
+    """Extract high-signal details that must occur in cited evidence.
+
+    Do not treat every capitalized word as a proper name: that produces many
+    false positives in German, where all nouns are capitalized. Restrict the
+    check to quoted expressions, numbers, acronym/model tokens, CamelCase
+    names, and a capitalized word immediately paired with a number.
+    """
+    without_links = re.sub(
+        r"\[[^\]]*\]\(https?://[^)]+\)",
+        " ",
+        text,
+    )
+    without_urls = re.sub(
+        r"https?://[^\s)\]>]+",
+        " ",
+        without_links,
+    )
+    without_markdown = re.sub(r"[*_`#]", "", without_urls)
+    terms: list[str] = []
+
+    # Quoted product/model/event names, for example "Mythos 5".
+    for match in re.finditer(
+        r'["“„]([^"”]{2,80})["”]',
+        without_markdown,
+    ):
+        terms.append(match.group(1).strip())
+
+    # Acronyms and acronym compounds: EU, EU-Kommission, KI-Modelle.
+    terms.extend(re.findall(
+        r"\b[A-ZÄÖÜ]{2,}(?:-[A-Za-zÄÖÜäöüß0-9]+)*\b",
+        without_markdown,
+    ))
+
+    # CamelCase or mixed-case product/company names: OpenAI, iPhone.
+    terms.extend(re.findall(
+        r"\b(?:[A-ZÄÖÜ][a-zäöüß]+[A-Z][A-Za-zÄÖÜäöüß0-9]*|"
+        r"[a-zäöüß]+[A-Z][A-Za-zÄÖÜäöüß0-9]*)\b",
+        without_markdown,
+    ))
+
+    # Names paired with versions/numbers: Mythos 5, Modell 99, GPT-5.
+    # Exclude temporal sentence starters such as "Ab 2".
+    number_prefix_stopwords = {
+        "ab", "am", "bis", "im", "seit", "vom", "von", "zum",
+        "as", "at", "by", "from", "on", "since", "until",
+    }
+    for match in re.finditer(
+        r"\b([A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]{1,40}\s+"
+        r"\d[\w.,:/+-]*)\b",
+        without_markdown,
+    ):
+        candidate = match.group(1)
+        prefix = candidate.split(None, 1)[0].casefold()
+        if prefix not in number_prefix_stopwords:
+            terms.append(candidate)
+
+    # Standalone numbers, dates, versions, and percentages.
+    terms.extend(re.findall(
+        r"\b\d[\w.,:/%+-]*\b",
+        without_markdown,
+    ))
+
+    seen = set()
+    unique = []
+    for term in terms:
+        normalized = _normalize_grounding_text(term).strip(
+            ".,:;!?()[]{}"
+        )
+        if len(normalized) < 2 or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+def _canonicalize_grounding_aliases(value: object) -> str:
+    """Canonicalize narrowly defined cross-language legal terms."""
+    normalized = _normalize_grounding_text(value)
+    normalized = re.sub(
+        r"\beu(?:-|\s+)ki(?:-|\s+)(?:verordnung|gesetz(?:es)?)\b",
+        "eu ai act",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bki(?:-|\s*)system(?:e|en|s)?\b",
+        "ai systems",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bai(?:-|\s+)system(?:s)?\b",
+        "ai systems",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bartikel(?=\s+\d)",
+        "article",
+        normalized,
+    )
+    return normalized
+
+
+def _grounding_term_supported(term: str, evidence: str) -> bool:
+    """Check a high-signal term against one source's evidence.
+
+    Exact matches are preferred. For a hyphen compound such as
+    ``KI-Leitlinien``, accept separately occurring components only when every
+    meaningful component is present in the same cited source. This handles
+    harmless German compound wording without allowing evidence to leak across
+    sources.
+    """
+    normalized = _canonicalize_grounding_aliases(term)
+    canonical_evidence = _canonicalize_grounding_aliases(evidence)
+
+    if not normalized:
+        return False
+    if normalized in canonical_evidence:
+        return True
+
+    if "-" not in normalized:
+        return False
+
+    components = [
+        component
+        for component in normalized.split("-")
+        if len(component) >= 2
+    ]
+    return len(components) >= 2 and all(
+        component in canonical_evidence for component in components
+    )
+
+
+def _split_grounded_answer_blocks(answer: str) -> list[str]:
+    """Split common numbered/bulleted news answers into atomic blocks."""
+    text = (answer or "").strip()
+    if not text:
+        return []
+
+    starts = list(re.finditer(
+        r"(?m)^(?=(?:#{1,6}\s+)?(?:\d+[.)]|[-*]\s+))",
+        text,
+    ))
+    if len(starts) < 2:
+        return [block.strip() for block in re.split(r"\n\s*\n", text)
+                if block.strip()]
+
+    blocks = []
+    prefix = text[:starts[0].start()].strip()
+    if prefix:
+        blocks.append(prefix)
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        block = text[start.start():end].strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _match_named_grounding_source(
+    block: str,
+    sources: list[Dict],
+) -> Dict | None:
+    """Resolve an explicit publisher or title label to one source."""
+    matches = re.findall(
+        r"(?is)\b(?:quelle|source)\s*:?\s*"
+        r"([^()\n]+?)\s*[.)]*\s*$",
+        block or "",
+    )
+    if not matches:
+        return None
+
+    label = _normalize_grounding_text(matches[-1]).strip(" .,:;!?")
+    label = re.sub(r"\[\d+\]", "", label).strip()
+    if len(label) < 8:
+        return None
+
+    candidates = []
+    for source in sources:
+        title = _normalize_grounding_text(source.get("title") or "")
+        if label in title:
+            candidates.append(source)
+
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _filter_web_grounded_answer(answer: str, sources: list[Dict]) -> str:
+    """Remove answer blocks not supported by their directly cited source."""
+    indexed_sources = [
+        source
+        for source in sources
+        if isinstance(source, dict) and source.get("url")
+    ]
+    source_by_url = {
+        str(source.get("url") or "").rstrip("/"): source
+        for source in indexed_sources
+    }
+    if not indexed_sources:
+        return _WEB_GROUNDING_FALLBACK
+
+    kept = []
+    rejected = 0
+    answer_blocks = _split_grounded_answer_blocks(answer)
+    logger.info(
+        "[web-grounding] filter input: sources=%s blocks=%s answer=%r",
+        len(indexed_sources),
+        len(answer_blocks),
+        (answer or "")[:2000],
+    )
+
+    for block in answer_blocks:
+        urls = re.findall(r"https?://[^\s)\]>]+", block)
+        citation_numbers = [
+            int(number)
+            for number in re.findall(r"(?<!\!)\[(\d+)\]", block)
+        ]
+        matched_sources = []
+
+        for url in urls:
+            clean_url = url.rstrip(".,:;!?/")
+            source = source_by_url.get(clean_url)
+            if source is not None and source not in matched_sources:
+                matched_sources.append(source)
+
+        for number in citation_numbers:
+            index = number - 1
+            if 0 <= index < len(indexed_sources):
+                source = indexed_sources[index]
+                if source not in matched_sources:
+                    matched_sources.append(source)
+
+        named_source = None
+        if not matched_sources:
+            named_source = _match_named_grounding_source(
+                block,
+                indexed_sources,
+            )
+            if named_source is not None:
+                matched_sources.append(named_source)
+                source_number = next(
+                    index
+                    for index, source in enumerate(indexed_sources, 1)
+                    if source is named_source
+                )
+                source_url = str(
+                    named_source.get("url") or ""
+                ).rstrip("/")
+                block = (
+                    f"{block.rstrip()} "
+                    f"[{source_number}]({source_url})"
+                )
+
+        # Only an explicit Markdown heading may survive without a citation.
+        # A short claim containing an unknown URL must never be mistaken for
+        # presentation-only text merely because it ends in a Markdown link.
+        plain = re.sub(r"[#*_`]", "", block).strip()
+        heading_only = bool(
+            re.fullmatch(r"#{1,6}[^\n]{1,80}", block.strip())
+            and not urls
+            and not citation_numbers
+            and not re.search(r"[.!?]\s*$", plain)
+        )
+        if not matched_sources:
+            if heading_only:
+                kept.append(block)
+            else:
+                logger.info(
+                    "[web-grounding] rejected block without matched source: "
+                    "citations=%s urls=%s block=%r",
+                    citation_numbers,
+                    urls,
+                    block[:1000],
+                )
+                rejected += 1
+            continue
+
+        evidence = " ".join(_source_grounding_text(s) for s in matched_sources)
+        terms = _concrete_grounding_terms(block)
+        unsupported_terms = [
+            term
+            for term in terms
+            if not _grounding_term_supported(term, evidence)
+        ]
+        if not unsupported_terms:
+            kept.append(block)
+        else:
+            logger.info(
+                "[web-grounding] rejected block: citations=%s urls=%s "
+                "unsupported_terms=%s block=%r",
+                citation_numbers,
+                urls,
+                unsupported_terms,
+                block[:500],
+            )
+            rejected += 1
+
+    deduplicated = []
+    seen_blocks = set()
+    for block in kept:
+        key = _normalize_grounding_text(block)
+        if key in seen_blocks:
+            continue
+        seen_blocks.add(key)
+        deduplicated.append(block)
+    kept = deduplicated
+
+    def _is_source_only(block: str) -> bool:
+        compact = block.strip()
+        return bool(re.fullmatch(
+            r"(?is)(?:quelle|source)\s*:\s*"
+            r"(?:\[[^\]]+\]\(https?://[^)]+\)|https?://\S+)",
+            compact,
+        ))
+
+    kept = [
+        block for block in kept
+        if not _is_source_only(block)
+    ]
+    substantive = [
+        block
+        for block in kept
+        if (
+            re.search(r"https?://", block)
+            or re.search(r"(?<!\!)\[\d+\]", block)
+        )
+    ]
+    if not substantive:
+        return _WEB_GROUNDING_FALLBACK
+
+    result = "\n\n".join(kept).strip()
+    if rejected:
+        result += (
+            "\n\nWeitere Aussagen wurden nicht genannt, "
+            "weil die Suchergebnisse dafür keine ausreichende Evidenz enthielten."
+        )
+    return result
+
+
 def _looks_like_notes_list_request(text: str) -> bool:
     """Whether the user is asking to see existing notes, not create one."""
     t = (text or "").lower()
@@ -383,7 +739,15 @@ Or with JSON for fresh news:
 ```
 Search the web for a SINGLE quick fact/lookup mid-task. For news / "today" / "latest" queries, pass `time_filter` ("day", "week", "month", or "year"). NOT for "research X" / "do research on X" / "look into X" requests — those mean a multi-source DEEP RESEARCH job: use `trigger_research` instead (it runs in the Deep Research sidebar and produces a full report). web_search = one quick query; trigger_research = a researched report.
 If this `web_search` tool section is visible, search is available. Do NOT tell the user web/search tools are unavailable.
-Use this instead of `bash`, `curl`, `python`, `requests`, or scraping code for web lookup/search/latest/current requests.""",
+Use this instead of `bash`, `curl`, `python`, `requests`, or scraping code for web lookup/search/latest/current requests.
+
+WEB-SEARCH GROUNDING — mandatory after every web_search:
+- Treat only factual information explicitly present in the returned search text as evidence.
+- A source title, URL, source-list entry, or general topic page does not by itself support a claim.
+- Do not add names, products, models, events, dates, numbers, quotations, or other concrete details from memory or inference.
+- Attach each source URL directly to the claim it supports; never cite a URL for a claim not stated in its returned text.
+- If the results do not support enough requested items, provide only the supported items and clearly state that the remaining evidence was insufficient.
+- Never invent another example merely to satisfy a requested count.""",
 
     "web_fetch": """\
 ```web_fetch
@@ -3285,6 +3649,9 @@ async def stream_agent_loop(
     first_token_received = False
     tool_events = []   # Persist tool executions for history reload
     round_texts = []   # Cleaned text per round for history reload
+    # Sources gathered during this turn. Once populated, ordinary prose in a
+    # later answer round is buffered until it can be checked claim-by-claim.
+    _web_grounding_sources: list[Dict] = []
     # Completion-verifier state (mechanism 3a). _effectful_used flips on when
     # a tool that produces a checkable artifact runs; the verifier only fires
     # on such turns and at most _VERIFIER_MAX_ROUNDS times.
@@ -3352,6 +3719,10 @@ async def stream_agent_loop(
 
     for round_num in range(1, max_rounds + 1):
         round_response = ""
+        _grace_synthesized = False
+        # Sources are added only after a web_search tool executes. Therefore
+        # this is false in the search/tool round and true in its answer round.
+        _buffer_web_answer = bool(_web_grounding_sources)
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
         native_tool_calls = []  # populated if model uses function calling
         # Reset doc streaming state per round
@@ -3580,9 +3951,19 @@ async def stream_agent_loop(
                                 else data["delta"]
                             )
                             round_response += _delta_text
-                            full_response += _delta_text
                             data["delta"] = _delta_text
-                        if not _ody_qwen_finetune_model or data.get("thinking"):
+                            # After web search, do not expose or persist answer
+                            # prose until the completed no-tool round has passed
+                            # deterministic source grounding.
+                            if not _buffer_web_answer:
+                                full_response += _delta_text
+                        if (
+                            data.get("thinking")
+                            or (
+                                not _ody_qwen_finetune_model
+                                and not _buffer_web_answer
+                            )
+                        ):
                             yield f"data: {json.dumps(data)}\n\n"
                         # Detect text-fence doc streaming. Normal agent prompts
                         # use ```create_document; the doc LoRA streaming path
@@ -3779,8 +4160,19 @@ async def stream_agent_loop(
                             "Using ONLY the information already gathered above, write "
                             "the final answer for the user now. Do NOT call any tools, "
                             "do NOT explain your reasoning — output the finished response "
-                            "directly. If some data couldn't be fetched, just work with "
-                            "what you have and note what's missing in one short line."
+                            "directly. If web-search results were gathered, "
+                            "every concrete factual claim must be explicitly "
+                            "supported by the returned search text. A title, URL, "
+                            "source-list entry, or general topic page alone is not "
+                            "evidence for a claim. Do not add names, products, "
+                            "models, events, dates, numbers, quotations, or other "
+                            "details from memory or inference. Cite only URLs whose "
+                            "returned text supports the associated claim. If the "
+                            "evidence supports fewer items than requested, provide "
+                            "fewer items and state the limitation instead of inventing "
+                            "or inferring another. If some data couldn't be fetched, "
+                            "just work with what you have and note what's missing in "
+                            "one short line."
                         ),
                     }]
                     _raw = await llm_call_async(
@@ -3791,14 +4183,16 @@ async def stream_agent_loop(
                 except Exception as _e:
                     logger.warning(f"[agent] grace synthesis failed: {_e}")
                 if _synth:
-                    yield f'data: {json.dumps({"delta": _synth})}\n\n'
-                    full_response += _synth
+                    # Route the synthesized answer through the ordinary
+                    # persistence, grounding, and single-emission path.
+                    round_response = _synth
                 else:
-                    _fb = ("I gathered some search results but couldn't pull a clean "
-                           "answer together. Want me to try a more specific question, "
-                           "or summarize what I did find?")
-                    yield f'data: {json.dumps({"delta": _fb})}\n\n'
-                    full_response += _fb
+                    round_response = (
+                        "I gathered some search results but couldn't pull a clean "
+                        "answer together. Want me to try a more specific question, "
+                        "or summarize what I did find?"
+                    )
+                _grace_synthesized = True
 
         # ── Fallback: auto-create document if model dumped large code in chat ──
         # If no create_document tool was used, check for big code blocks in text
@@ -3847,9 +4241,42 @@ async def stream_agent_loop(
             executing_resumed_approval = True
             resumed_tool_block = None
 
-        cleaned_round = strip_tool_blocks(round_response, skip_fenced=(_is_api_model and not used_native and not guide_only)).strip()
+        cleaned_round = strip_tool_blocks(
+            round_response,
+            skip_fenced=(_is_api_model and not used_native and not guide_only),
+        ).strip()
+
+        # Only filter a completed answer round. If this buffered round invokes
+        # another tool, discard its hidden planning prose and keep the sources
+        # for the next round instead of presenting an intermediate answer.
+        if _buffer_web_answer and tool_blocks:
+            # This is hidden intermediate planning prose, not a completed
+            # answer. Do not stream or persist it in round_texts.
+            cleaned_round = ""
+        elif _buffer_web_answer:
+            cleaned_round = _filter_web_grounded_answer(
+                cleaned_round,
+                _web_grounding_sources,
+            )
+            if cleaned_round:
+                full_response += cleaned_round
+                yield f'data: {json.dumps({"delta": cleaned_round})}\n\n'
+
         round_texts.append(cleaned_round)
-        if _ody_qwen_finetune_model and not tool_blocks and cleaned_round:
+        if (
+            _grace_synthesized
+            and not _buffer_web_answer
+            and not tool_blocks
+            and cleaned_round
+        ):
+            full_response += cleaned_round
+
+        if (
+            (_ody_qwen_finetune_model or _grace_synthesized)
+            and not _buffer_web_answer
+            and not tool_blocks
+            and cleaned_round
+        ):
             yield f'data: {json.dumps({"delta": cleaned_round})}\n\n'
 
         if not tool_blocks:
@@ -4242,6 +4669,12 @@ async def stream_agent_loop(
                     if _src_end >= 0:
                         try:
                             _extracted_sources = json.loads(_src_text[_src_idx + len(_src_marker):_src_end])
+                            if isinstance(_extracted_sources, list):
+                                _web_grounding_sources = [
+                                    source for source in _extracted_sources
+                                    if isinstance(source, dict)
+                                    and source.get("url")
+                                ]
                             yield f'data: {json.dumps({"type": "web_sources", "data": _extracted_sources})}\n\n'
                             # Strip the marker from the result so it doesn't show in chat
                             _clean = _src_text[:_src_idx].rstrip()
