@@ -162,7 +162,12 @@ async def test_glob_confined_e2e(ws, admin):
     # not the absence of the path string.
     rel = os.path.relpath(secret, os.path.realpath(ws))
     _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": rel})), owner="a", workspace=ws)
-    assert r["exit_code"] == 0 and "No files" in r["output"] and secret not in r["output"]
+    # The not-found response intentionally echoes the caller-supplied pattern.
+    # On macOS, /tmp resolves to /private/tmp, so the relative pattern can
+    # contain the non-canonical absolute path as a substring. The security
+    # property is that the path is rejected as a match, reported as "No files".
+    assert r["exit_code"] == 0
+    assert "No files" in r["output"]
     _, r = await execute_tool_block(_block("glob", json.dumps({"pattern": secret})), owner="a", workspace=ws)
     assert r["exit_code"] == 0 and "No files" in r["output"]
 
