@@ -848,10 +848,19 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     if (!requestedSessionId) return;
 
     try {
-      const url = new URL(API_BASE + '/api/tool-approvals');
-      url.searchParams.set('sessionId', requestedSessionId);
+      // Built by hand rather than via new URL(): API_BASE is '' until
+      // chatModule.init() runs, and new URL('/api/...') with no base throws a
+      // TypeError that this function's catch would swallow, silently dropping
+      // every recovered approval. Matches how the rest of chat.js builds URLs.
+      // Built by hand rather than via new URL(): API_BASE is '' until
+      // chatModule.init() runs, and new URL('/api/...') with no base throws a
+      // TypeError that this function's catch would swallow, silently dropping
+      // every recovered approval. Matches how the rest of chat.js builds URLs.
+      const url = API_BASE
+        + '/api/tool-approvals?sessionId='
+        + encodeURIComponent(requestedSessionId);
 
-      const response = await fetch(url.toString(), {
+      const response = await fetch(url, {
         credentials: 'same-origin'
       });
 

@@ -62,7 +62,7 @@ standard.
 |---|---|---|---|
 | **Route / API integration** | Real ASGI request/response, auth gates, admin gates, owner isolation through the app | files using `TestClient` | `tests/routes/` |
 | **CLI / script** | `scripts/` entry points and dev tooling | `tests.helpers.cli_loader.load_script` users, `test_pr_blocker_audit.py` | `tests/cli/` |
-| **Frontend / JS** | Browser-coupled JS run via Node subprocess; streaming-render invariants | `*_js.py` wrappers, `tests/streaming/*.test.mjs` | `tests/js/` |
+| **Frontend / JS** | Browser-coupled JS run via Node subprocess; streaming-render invariants | `*_js.py` wrappers, `tests/streaming/*.test.mjs`, `tests/frontend/*.test.mjs` | `tests/js/` |
 | **Tool execution / parsing** | Tool-call parsing, malformed/nonstring args, tool policy | `test_unknown_tool_calls.py`, `test_tool_policy.py`, `*_nonstring.py` | `tests/unit/` or `tests/services/` |
 | **LLM / provider** | Provider response parsing, streaming, sanitize, reasoning fallback | `test_llm_core_*`, `test_anthropic_response_parse.py` | `tests/services/` |
 | **Session / history / DB** | Session lifecycle, history, schema, ownership at the data layer | `test_session_*`, `test_sqlite_foreign_keys.py` | `tests/services/` or `tests/unit/` |
