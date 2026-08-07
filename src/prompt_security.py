@@ -61,6 +61,66 @@ def _sanitize_label(label: str) -> str:
     return label
 
 
+def guarded_inline_quote(text: Any, max_len: int = 200) -> str:
+    """Neutralize model- or source-derived text for quoting inside a directive.
+
+    Some control-flow directives have to quote back what the model just wrote
+    (for example "you announced an action but called no tool"). Those
+    directives live in the *system* role, which is the trusted instruction
+    layer, so the quoted fragment must not be able to read as instructions.
+
+    The fragment is collapsed to a single line, guard markers are escaped so it
+    cannot close the block early, and it is wrapped in the same guard markers
+    used for retrieved source data — the policy the model already receives
+    tells it that anything inside those markers is data, never instructions.
+
+    Returns a multi-line string safe to interpolate into a system directive.
+    """
+    raw = "" if text is None else str(text)
+    # Collapse to one line: newlines would let the fragment start what looks
+    # like a fresh instruction block or a fake role header.
+    flattened = " ".join(raw.split())
+    flattened = _escape_guard_markers(flattened)
+    if len(flattened) > max_len:
+        flattened = flattened[:max_len].rstrip() + "…"
+    return f"{GUARD_OPEN}\n{flattened}\n{GUARD_CLOSE}"
+
+
+def guarded_list_quote(items: Any, max_items: int = 20, max_len: int = 400) -> str:
+    """Guard-wrap a list of model-derived findings for use inside a directive.
+
+    Same reasoning as :func:`guarded_inline_quote`, for the case where several
+    fragments have to be listed. Each entry is flattened to one line so a single
+    entry cannot fake a new instruction block or a role header, and the whole
+    list sits inside one guarded block.
+    """
+    if items is None:
+        entries = []
+    elif isinstance(items, (str, bytes)):
+        entries = [items if isinstance(items, str) else items.decode("utf-8", "replace")]
+    else:
+        try:
+            entries = list(items)
+        except TypeError:
+            entries = [items]
+
+    lines = []
+    for entry in entries[:max_items]:
+        flattened = " ".join(str(entry).split())
+        flattened = _escape_guard_markers(flattened)
+        if len(flattened) > max_len:
+            flattened = flattened[:max_len].rstrip() + "\u2026"
+        if flattened:
+            lines.append(f"- {flattened}")
+
+    dropped = max(0, len(entries) - max_items)
+    if dropped:
+        lines.append(f"- (and {dropped} more, omitted)")
+
+    body = "\n".join(lines) if lines else "- (no details provided)"
+    return f"{GUARD_OPEN}\n{body}\n{GUARD_CLOSE}"
+
+
 def untrusted_context_message(label: str, content: Any) -> Dict[str, Any]:
     """Return an LLM message that keeps retrieved/source text out of system role.
 

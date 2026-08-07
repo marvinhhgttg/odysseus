@@ -25,6 +25,7 @@ from src.llm_core import (
 )
 from src.model_context import estimate_tokens
 from src.settings import get_setting
+from src.prompt_nudges import build_intent_nudge_message, build_verifier_findings_message
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, WEB_TOOL_NAMES, ToolPolicy
@@ -4309,15 +4310,10 @@ async def stream_agent_loop(
                     _note = "\n\n_Double-checked the work and found something to fix._\n\n"
                     yield f'data: {json.dumps({"delta": _note})}\n\n'
                     full_response += _note
-                    messages.append({
-                        "role": "system",
-                        "content": (
-                            "An independent verifier reviewed your work against the "
-                            "original request and found issues that must be fixed before "
-                            "this is actually done:\n- " + "\n- ".join(_vfail) +
-                            "\n\nFix these now using tools, then finish."
-                        ),
-                    })
+                    # Verifier output is model-derived text judged from a
+                    # snapshot of tool activity, so it is guard-wrapped rather
+                    # than concatenated into the trusted system role.
+                    messages.append(build_verifier_findings_message(_vfail))
                     # Require fresh effectful work before verifying again, so we
                     # never re-verify an unchanged state in a loop.
                     _effectful_used = False
@@ -4348,28 +4344,10 @@ async def stream_agent_loop(
                 _intent_nudge_count += 1
                 _matched_phrase = _intent_match.group(0).strip()
                 logger.info(f"[agent] intent-without-action nudge #{_intent_nudge_count} on round {round_num}: {_matched_phrase!r}")
-                _lower_phrase = _matched_phrase.lower()
-                _cookbook_log_hint = ""
-                if any(_word in _lower_phrase for _word in ("log", "logs", "output", "tail", "status")):
-                    _cookbook_log_hint = (
-                        " If this is about a Cookbook/model serve, the concrete calls are: "
-                        "`list_served_models` first, then `tail_serve_output` with the "
-                        "session_id from the serve/list result. Never answer with "
-                        "\"check logs\" when those tools are available."
-                    )
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        f"You just wrote: \"{_matched_phrase}\" — but ended the "
-                        "turn without making the actual tool call. The user can "
-                        "see you announced the action but didn't run it, which "
-                        "is the most frustrating thing you can do. "
-                        "DO IT NOW: emit the actual function call this turn. "
-                        f"{_cookbook_log_hint}"
-                        "If you decided not to do it after all, say so plainly in "
-                        "one sentence instead of restating the plan."
-                    ),
-                })
+                # The fragment is model output and the model may have been
+                # steered by an untrusted source, so it is guard-wrapped rather
+                # than quoted raw into the trusted system role.
+                messages.append(build_intent_nudge_message(_matched_phrase))
                 # Visible signal in the stream so the user knows we caught it.
                 yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
                 continue

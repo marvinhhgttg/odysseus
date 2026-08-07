@@ -36,7 +36,12 @@ the codebase, you are probably right to stay away.
 - Skill/tool prompt-injection audit. User-editable skills, notes, documents,
   fetched pages, and memories should be treated as untrusted data. Keep testing
   whether models follow malicious instructions from those surfaces.
-- Better degraded-state reporting for ChromaDB, SearXNG, email, ntfy, and provider probes.
+  Structural side is now covered: `src/prompt_security.py` wraps ~19 external
+  surfaces via `untrusted_context_message()`, and `tests/test_prompt_system_role_guard.py`
+  fails the build when any unreviewed value is interpolated into the system
+  role. Still open: the behavioural half — does a given local model actually
+  resist instructions inside the guard markers? That needs model-in-the-loop
+  evals, not static analysis.
 - Email performance audit. Fetching, searching, opening, deleting, and sending
   email can feel slow, especially over IMAP/SMTP providers with high latency.
   Need someone who knows mail performance to profile the current flow, identify
