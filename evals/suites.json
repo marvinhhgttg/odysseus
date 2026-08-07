@@ -32,17 +32,6 @@
         "tests/test_tool_output_prompt_injection.py"
       ]
     },
-    "prompt_safety": {
-      "description": "Untrusted-context wrapping and the system-role trust boundary",
-      "tests": [
-        "tests/test_prompt_security.py",
-        "tests/test_prompt_injection_audit.py",
-        "tests/test_prompt_injection_model_echo.py",
-        "tests/test_prompt_system_role_guard.py",
-        "tests/test_skill_index_prompt_injection.py",
-        "tests/test_tool_output_prompt_injection.py"
-      ]
-    },
     "runtime": {
       "description": "Real application boot, route surface and degraded-dependency startup",
       "tests": [

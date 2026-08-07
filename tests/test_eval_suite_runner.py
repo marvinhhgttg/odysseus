@@ -14,6 +14,21 @@ run_evals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(run_evals)
 
 
+def test_eval_config_has_no_duplicate_json_keys():
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    json.loads(
+        (ROOT / "evals" / "suites.json").read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicates,
+    )
+
+
 def test_configured_eval_files_exist():
     config = run_evals.load_config(ROOT / "evals" / "suites.json")
 
