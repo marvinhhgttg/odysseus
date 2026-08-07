@@ -53,6 +53,30 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
   }
   let _pendingContinue = null; // Stores the stopped AI element to merge with new response
   let _pendingApprovalResume = null; // One-shot tool approval continuation
+
+  async function loadToolAvailabilityStatus() {
+    const status = document.getElementById('tool-availability-status');
+    if (!status) return;
+
+    try {
+      const response = await fetch('/api/tools', {
+        credentials: 'same-origin',
+      });
+      if (!response.ok) return;
+
+      const payload = await response.json();
+      const tools = Array.isArray(payload?.tools) ? payload.tools : [];
+      const enabledCount = tools.filter((tool) => tool?.enabled === true).length;
+      if (!enabledCount) return;
+
+      status.textContent =
+        `Agent-Tools: ${enabledCount} aktiviert · Änderungen benötigen Freigabe`;
+      status.hidden = false;
+    } catch (error) {
+      console.warn('chat: tool availability status unavailable', error);
+    }
+  }
+
   function _createChatSendPerf() {
     const started = (performance && performance.now) ? performance.now() : Date.now();
     let last = started;
@@ -339,6 +363,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
    * Initialize with dependencies
    */
   export function init(apiBase) {
+    void loadToolAvailabilityStatus();
     API_BASE = apiBase;
     initSlashCommands({ apiBase, isStreaming: () => isStreaming });
     // Initialize email inbox
