@@ -8,9 +8,13 @@ product-level quality gates.
 - `approval`: Tool approval persistence, enforcement, routes, resume, and
   browser-side recovery after a reload.
 - `routing`: Deterministic model routing and request integration.
+- `prompt_safety`: Untrusted-context wrapping and the system-role trust
+  boundary.
 - `runtime`: Real application boot in a clean process — route surface,
   degraded-dependency startup, and checkout isolation.
 - `grounding`: Claim-level web grounding and source attribution.
+- `workflows`: Scheduled tasks, workflow ownership, lifecycle safety, and
+  pipeline execution.
 
 Suite membership is declared in `evals/suites.json`.
 

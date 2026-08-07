@@ -46,6 +46,26 @@
         "tests/test_web_search_stream_grounding.py",
         "tests/test_search_content_block_source_index.py"
       ]
+    },
+    "workflows": {
+      "description": "Scheduled tasks, workflow ownership, lifecycle safety and pipeline execution",
+      "tests": [
+        "tests/cli/test_tasks_cli_preview.py",
+        "tests/test_builtin_mcp_bg_tasks.py",
+        "tests/test_chat_helpers_bg_tasks_tracked.py",
+        "tests/test_resolve_model_offloaded.py",
+        "tests/test_scheduler_prompt_cache_time.py",
+        "tests/test_scheduler_restart_doublefire.py",
+        "tests/test_scheduler_scheduled_time_validation.py",
+        "tests/test_task_chain_owner_scope.py",
+        "tests/test_task_cookbook_admin_gate.py",
+        "tests/test_task_endpoint_normalization.py",
+        "tests/test_task_scheduler_cancel.py",
+        "tests/test_task_scheduler_session_delivery.py",
+        "tests/test_task_session_folder.py",
+        "tests/test_task_shell_tools.py",
+        "tests/test_webhook_task_refs.py"
+      ]
     }
   }
 }

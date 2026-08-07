@@ -38,6 +38,7 @@ def test_configured_eval_files_exist():
         "grounding",
         "prompt_safety",
         "runtime",
+        "workflows",
     }
 
     for suite in config["suites"].values():
