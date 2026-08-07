@@ -1,12 +1,21 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
+from core.database import ToolApprovalRecord
 from routes import chat_routes
-from src.tool_approval import ApprovalError
+from src.tool_approval import (
+    ApprovalError,
+    ApprovalStatus,
+    ToolApproval,
+)
+from src.tool_approval_store import ToolApprovalStore
 
 
 SECRET_TOOL_CONTENT = "printf 'route-secret-must-not-leak\\n'"
@@ -422,3 +431,102 @@ async def test_invalid_approval_transition_is_http_conflict(monkeypatch):
     assert response.status_code == 409
     assert response.json() == {"detail": "approval is unavailable"}
     assert store.calls == [("approve", "approval-1", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_persisted_approval_survives_store_and_router_reload(
+    monkeypatch,
+    tmp_path,
+):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'route-reload.db'}",
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+    )
+    ToolApprovalRecord.__table__.create(engine)
+    factory = sessionmaker(
+        bind=engine,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    created_at = datetime.now(timezone.utc)
+    approval = ToolApproval.create(
+        owner="alice",
+        session_id="session-1",
+        run_id="run-1",
+        tool_name="bash",
+        risk="host_control",
+        arguments=SECRET_TOOL_CONTENT,
+        now=created_at,
+        ttl=timedelta(minutes=10),
+    )
+
+    try:
+        original_store = ToolApprovalStore(factory)
+        original_store.create(
+            approval,
+            tool_content=SECRET_TOOL_CONTENT,
+        )
+
+        reloaded_store = ToolApprovalStore(factory)
+        router = _router(monkeypatch, reloaded_store)
+
+        app = FastAPI()
+        app.include_router(router)
+
+        @app.middleware("http")
+        async def add_test_identity(request, call_next):
+            request.state.current_user = "alice"
+            return await call_next(request)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://approval.test",
+        ) as client:
+            listed = await client.get(
+                "/api/tool-approvals",
+                params={"sessionId": "session-1"},
+            )
+
+            assert listed.status_code == 200
+            assert listed.json() == {
+                "approvals": [
+                    {
+                        "approvalId": approval.id,
+                        "sessionId": "session-1",
+                        "runId": "run-1",
+                        "tool": "bash",
+                        "risk": "host_control",
+                        "status": "pending",
+                        "expiresAt": approval.expires_at.isoformat(),
+                    }
+                ]
+            }
+            assert SECRET_TOOL_CONTENT not in listed.text
+            assert "toolContent" not in listed.text
+            assert "argumentHash" not in listed.text
+            assert "fingerprint" not in listed.text
+
+            approved = await client.post(
+                f"/api/tool-approvals/{approval.id}/approve"
+            )
+
+            assert approved.status_code == 200
+            assert approved.json()["status"] == "approved"
+            assert SECRET_TOOL_CONTENT not in approved.text
+
+        verification_store = ToolApprovalStore(factory)
+        persisted = verification_store.get(
+            approval.id,
+            owner="alice",
+        )
+
+        assert persisted.status is ApprovalStatus.APPROVED
+        assert verification_store.load_tool_content(
+            approval.id,
+            owner="alice",
+        ) == SECRET_TOOL_CONTENT
+    finally:
+        engine.dispose()
