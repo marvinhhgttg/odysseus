@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 
 from routes import chat_routes
 from src.tool_approval import ApprovalError
@@ -329,3 +330,95 @@ def test_restore_approval_resume_request_keeps_different_latest_turn():
     )
 
     assert restored == original
+
+
+@pytest.mark.asyncio
+async def test_approval_routes_work_through_asgi_http(monkeypatch):
+    store = FakeApprovalStore()
+    router = _router(monkeypatch, store)
+
+    app = FastAPI()
+    app.include_router(router)
+
+    @app.middleware("http")
+    async def add_test_identity(request, call_next):
+        request.state.current_user = request.headers.get(
+            "x-test-user",
+            "alice",
+        )
+        return await call_next(request)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://approval.test",
+    ) as client:
+        listed = await client.get(
+            "/api/tool-approvals",
+            params={"sessionId": "session-1"},
+            headers={"x-test-user": "alice"},
+        )
+
+        assert listed.status_code == 200
+        assert listed.json() == {
+            "approvals": [
+                {
+                    "approvalId": "approval-1",
+                    "sessionId": "session-1",
+                    "runId": "run-1",
+                    "tool": "bash",
+                    "risk": "host_control",
+                    "status": "pending",
+                    "expiresAt": "2026-08-06T10:00:00+00:00",
+                }
+            ]
+        }
+        assert SECRET_TOOL_CONTENT not in listed.text
+
+        approved = await client.post(
+            "/api/tool-approvals/approval-1/approve",
+            headers={"x-test-user": "alice"},
+        )
+
+        assert approved.status_code == 200
+        assert approved.json() == {
+            "approvalId": "approval-1",
+            "sessionId": "session-1",
+            "runId": "run-1",
+            "status": "approved",
+            "expiresAt": "2026-08-06T10:00:00+00:00",
+        }
+        assert SECRET_TOOL_CONTENT not in approved.text
+
+    assert store.calls == [
+        ("list", "session-1", "alice"),
+        ("approve", "approval-1", "alice"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invalid_approval_transition_is_http_conflict(monkeypatch):
+    store = FakeApprovalStore()
+    store.error = ApprovalError("approval is unavailable")
+    router = _router(monkeypatch, store)
+
+    app = FastAPI()
+    app.include_router(router)
+
+    @app.middleware("http")
+    async def add_test_identity(request, call_next):
+        request.state.current_user = "alice"
+        return await call_next(request)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://approval.test",
+    ) as client:
+        response = await client.post(
+            "/api/tool-approvals/approval-1/approve"
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "approval is unavailable"}
+    assert store.calls == [("approve", "approval-1", "alice")]
