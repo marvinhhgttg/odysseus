@@ -163,3 +163,16 @@ def test_unknown_suite_exits_nonzero(tmp_path):
         )
 
     assert exc.value.code != 0
+
+
+def test_ci_workflow_runs_and_uploads_quality_evals():
+    workflow = (
+        ROOT / ".github" / "workflows" / "ci.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "  quality-evals:\n" in workflow
+    assert "run: python scripts/run_evals.py" in workflow
+    assert "name: quality-eval-report" in workflow
+    assert "path: .artifacts/evals/latest.json" in workflow
+    assert "if: ${{ always() }}" in workflow
+    assert "if-no-files-found: warn" in workflow

@@ -60,3 +60,12 @@ python scripts/run_evals.py approval \
 - `2`: Invalid command-line arguments or an invalid configuration.
 
 Missing configured test files fail closed and make the evaluation fail.
+
+## Continuous integration
+
+The blocking `Quality evals` job in `.github/workflows/ci.yml` runs all
+configured suites on pushes to `main` and on pull requests.
+
+The job uploads `.artifacts/evals/latest.json` as the
+`quality-eval-report` artifact, including after a failed evaluation run when
+the report was successfully created.
