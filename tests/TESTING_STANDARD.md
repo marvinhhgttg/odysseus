@@ -69,6 +69,7 @@ standard.
 | **Security / owner-scope / regression** | Owner isolation, auth, SSRF, path confinement, XSS, prompt injection, pinned regressions | `*_owner_scope.py`, `test_security_regressions.py`, `test_*ssrf*`, `test_*confinement*` | `tests/security/` |
 | **Cookbook / bootstrap** | Model serve lifecycle, dependency completion | `test_cookbook_*` | `tests/services/` |
 | **Scheduler / background** | Cron computation, background jobs, delivery | `test_compute_next_run_*`, `test_bg_*`, `test_task_scheduler_*` | `tests/services/` |
+| **Runtime smoke** | Booting the real app in a clean subprocess: route surface, degraded dependencies, checkout isolation. Always marked slow. | `test_runtime_smoke.py`, `tests/helpers/runtime_boot_probe.py` | `tests/` (root) |
 | **Import / module isolation** | The isolation helpers themselves and their guarantees | `test_helpers_import_state.py` | `tests/unit/` |
 
 A test that genuinely spans categories (e.g. a route test that also pins a

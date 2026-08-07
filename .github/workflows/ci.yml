@@ -161,6 +161,12 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # The approval suite includes a Node-backed frontend test that skips
+      # silently without node; install it rather than trusting the runner image.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: "20"
+
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 

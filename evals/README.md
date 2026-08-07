@@ -5,11 +5,24 @@ product-level quality gates.
 
 ## Suites
 
-- `approval`: Tool approval persistence, enforcement, routes and resume.
+- `approval`: Tool approval persistence, enforcement, routes, resume, and
+  browser-side recovery after a reload.
 - `routing`: Deterministic model routing and request integration.
+- `runtime`: Real application boot in a clean process — route surface,
+  degraded-dependency startup, and checkout isolation.
 - `grounding`: Claim-level web grounding and source attribution.
 
 Suite membership is declared in `evals/suites.json`.
+
+The `approval` suite includes a Node-backed frontend test. It is skipped when
+`node` is not on `PATH`, so CI installs Node explicitly rather than relying on
+the runner image.
+
+The `runtime` suite boots `app.py` in a subprocess against a throwaway data
+directory, started from outside the repository. It is the slowest suite by an
+order of magnitude and the one that catches fresh-install breakage — a missing
+dependency in the import graph, a circular import, or a router that stopped
+being registered.
 
 ## Run all suites
 
