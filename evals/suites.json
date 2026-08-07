@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "suites": {
+    "approval": {
+      "description": "Tool approval, persistence, enforcement, routes and resume",
+      "tests": [
+        "tests/test_tool_approval.py",
+        "tests/test_tool_approval_store.py",
+        "tests/test_tool_approval_enforcer.py",
+        "tests/test_tool_approval_routes.py",
+        "tests/test_tool_approval_agent_loop.py"
+      ]
+    },
+    "routing": {
+      "description": "Deterministic model routing and request integration",
+      "tests": [
+        "tests/test_model_routing.py",
+        "tests/test_chat_route_tool_policy.py",
+        "tests/test_api_call_integration_routing.py"
+      ]
+    },
+    "grounding": {
+      "description": "Claim-level web grounding and source attribution",
+      "tests": [
+        "tests/test_web_search_citation_grounding.py",
+        "tests/test_web_search_runtime_grounding.py",
+        "tests/test_web_search_stream_grounding.py",
+        "tests/test_search_content_block_source_index.py"
+      ]
+    }
+  }
+}
