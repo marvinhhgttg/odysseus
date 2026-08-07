@@ -65,7 +65,8 @@
         "tests/test_task_session_folder.py",
         "tests/test_task_shell_tools.py",
         "tests/test_webhook_task_refs.py",
-        "tests/test_workflow_smoke.py"
+        "tests/test_workflow_smoke.py",
+        "tests/test_workflow_scheduler_lifecycle.py"
       ]
     }
   }
