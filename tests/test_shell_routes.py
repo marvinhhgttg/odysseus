@@ -294,10 +294,10 @@ class TestHostDockerAccess:
     def test_socket_without_explicit_opt_in_is_disabled(
         self,
         monkeypatch,
-        tmp_path,
+        short_unix_socket_path,
         flag,
     ):
-        socket_path = tmp_path / "docker.sock"
+        socket_path = short_unix_socket_path
         with socket.socket(socket.AF_UNIX) as unix_socket:
             unix_socket.bind(str(socket_path))
             if flag is None:
@@ -310,9 +310,9 @@ class TestHostDockerAccess:
     def test_explicit_opt_in_with_unix_socket_is_enabled(
         self,
         monkeypatch,
-        tmp_path,
+        short_unix_socket_path,
     ):
-        socket_path = tmp_path / "docker.sock"
+        socket_path = short_unix_socket_path
         with socket.socket(socket.AF_UNIX) as unix_socket:
             unix_socket.bind(str(socket_path))
             monkeypatch.setenv("ODYSSEUS_ENABLE_HOST_DOCKER", "true")

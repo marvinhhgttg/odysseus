@@ -21,6 +21,8 @@ def test_configured_eval_files_exist():
         "approval",
         "routing",
         "grounding",
+        "prompt_safety",
+        "runtime",
     }
 
     for suite in config["suites"].values():

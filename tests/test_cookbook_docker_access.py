@@ -57,9 +57,12 @@ async def test_container_cli_only_is_rejected(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_container_opt_in_with_unix_socket_is_allowed(monkeypatch, tmp_path):
+async def test_container_opt_in_with_unix_socket_is_allowed(
+    monkeypatch,
+    short_unix_socket_path,
+):
     monkeypatch.setattr(cookbook_routes.shutil, "which", lambda binary: "/usr/bin/docker")
-    socket_path = tmp_path / "docker.sock"
+    socket_path = short_unix_socket_path
 
     with socket.socket(socket.AF_UNIX) as unix_socket:
         unix_socket.bind(str(socket_path))

@@ -1,11 +1,26 @@
 """Shared test configuration - ensure project root is on sys.path and stub heavy deps."""
 import sys
 import os
+import shutil
+import tempfile
 import types
 import importlib.util
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+@pytest.fixture
+def short_unix_socket_path():
+    """Return a short AF_UNIX path and remove its directory afterward."""
+    directory = Path(tempfile.mkdtemp(prefix="ody-sock-", dir="/tmp"))
+    try:
+        yield directory / "docker.sock"
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 # Importing core.database below runs init_db() at import time, and its default
 # (sqlite:///./data/app.db) can't be opened in a clean worktree because SQLite
