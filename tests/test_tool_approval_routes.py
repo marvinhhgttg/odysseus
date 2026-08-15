@@ -530,3 +530,98 @@ async def test_persisted_approval_survives_store_and_router_reload(
         ) == SECRET_TOOL_CONTENT
     finally:
         engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_agent_run_metrics_route_is_admin_only(monkeypatch):
+    store = FakeApprovalStore()
+    router = _router(monkeypatch, store)
+    endpoint = _route_endpoint(
+        router,
+        "/api/agent-runs/metrics",
+        method="GET",
+    )
+
+    monkeypatch.setattr(
+        chat_routes,
+        "owner_is_admin_or_single_user",
+        lambda owner: False,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await endpoint(_request("mallory"), limit=20)
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Agent run metrics are admin-only"
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_agent_run_metrics_route_returns_recent_metrics_for_admin(monkeypatch):
+    store = FakeApprovalStore()
+    router = _router(monkeypatch, store)
+    endpoint = _route_endpoint(
+        router,
+        "/api/agent-runs/metrics",
+        method="GET",
+    )
+
+    monkeypatch.setattr(
+        chat_routes,
+        "owner_is_admin_or_single_user",
+        lambda owner: True,
+    )
+    monkeypatch.setattr(
+        chat_routes.agent_runs,
+        "recent_metrics",
+        lambda limit: [
+            {
+                "run_id": "run-123",
+                "request_id": "request-456",
+                "status": "done",
+                "event_count": 4,
+                "response_time": 1.25,
+            }
+        ],
+    )
+
+    response = await endpoint(_request("alice"), limit=20)
+
+    assert response == {
+        "metrics": [
+            {
+                "run_id": "run-123",
+                "request_id": "request-456",
+                "status": "done",
+                "event_count": 4,
+                "response_time": 1.25,
+            }
+        ]
+    }
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_agent_run_metrics_route_rejects_unauthenticated_request(monkeypatch):
+    store = FakeApprovalStore()
+    router = _router(monkeypatch, store)
+    endpoint = _route_endpoint(
+        router,
+        "/api/agent-runs/metrics",
+        method="GET",
+    )
+
+    def reject_unauthenticated(request):
+        raise HTTPException(status_code=401, detail="authentication required")
+
+    monkeypatch.setattr(
+        chat_routes,
+        "require_user",
+        reject_unauthenticated,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await endpoint(_request(), limit=20)
+
+    assert exc.value.status_code == 401
+    assert store.calls == []

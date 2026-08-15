@@ -27,6 +27,7 @@ from src.session_search import search_session_messages
 from src.prompt_security import untrusted_context_message
 from core.exceptions import SessionNotFoundError
 from src.auth_helpers import effective_user, get_current_user, require_user
+from src.tool_security import owner_is_admin_or_single_user
 from routes.session_routes import _verify_session_owner
 from routes.document_helpers import _owner_session_filter
 from core.database import SessionLocal, get_session_mode, set_session_mode
@@ -532,6 +533,24 @@ def setup_chat_routes(
     # POST /api/tool-approvals/{approval_id}/approve
     # POST /api/tool-approvals/{approval_id}/reject
     # ------------------------------------------------------------------ #
+
+    @router.get(
+        "/api/agent-runs/metrics",
+        response_model=Dict[str, Any],
+    )
+    async def list_agent_run_metrics(
+        request: Request,
+        limit: int = Query(20, ge=1, le=100),
+    ) -> Dict[str, Any]:
+        owner = require_user(request)
+        if not owner_is_admin_or_single_user(owner):
+            raise HTTPException(status_code=403, detail="Agent run metrics are admin-only")
+
+        return {
+            "metrics": agent_runs.recent_metrics(limit),
+        }
+
+
     @router.post(
         "/api/tool-approvals/{approval_id}/approve",
         response_model=Dict[str, str],
