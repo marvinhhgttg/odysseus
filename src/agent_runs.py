@@ -19,7 +19,7 @@ import json
 import logging
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from src.request_context import correlation_context, current_request_id
@@ -93,6 +93,48 @@ def _store_terminal_metrics(run: _Run) -> None:
         if isinstance(data, dict):
             _record_metrics(run, data)
         return
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    """Nearest-rank percentile for a small in-memory sample."""
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    if q <= 0:
+        return ordered[0]
+    if q >= 1:
+        return ordered[-1]
+    rank = max(1, int((q * len(ordered)) + 0.999999999))
+    return ordered[min(len(ordered), rank) - 1]
+
+
+def summarize_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return compact aggregate stats for the provided metrics slice."""
+    status_counts = dict(Counter(str(item.get("status") or "unknown") for item in metrics))
+    response_times = [
+        float(item["response_time"])
+        for item in metrics
+        if isinstance(item, dict) and isinstance(item.get("response_time"), (int, float))
+    ]
+    avg_response_time = (
+        round(sum(response_times) / len(response_times), 3)
+        if response_times else None
+    )
+    p50_response_time = _percentile(response_times, 0.50)
+    p95_response_time = _percentile(response_times, 0.95)
+
+    if isinstance(p50_response_time, float):
+        p50_response_time = round(p50_response_time, 3)
+    if isinstance(p95_response_time, float):
+        p95_response_time = round(p95_response_time, 3)
+
+    return {
+        "count": len(metrics),
+        "status_counts": status_counts,
+        "avg_response_time": avg_response_time,
+        "p50_response_time": p50_response_time,
+        "p95_response_time": p95_response_time,
+    }
 
 
 # How long a FINISHED run (and its full replay buffer) is retained after the

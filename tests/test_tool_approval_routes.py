@@ -584,6 +584,17 @@ async def test_agent_run_metrics_route_returns_recent_metrics_for_admin(monkeypa
             }
         ],
     )
+    monkeypatch.setattr(
+        chat_routes.agent_runs,
+        "summarize_metrics",
+        lambda metrics: {
+            "count": len(metrics),
+            "status_counts": {"done": len(metrics)},
+            "avg_response_time": 1.25,
+            "p50_response_time": 1.25,
+            "p95_response_time": 1.25,
+        },
+    )
 
     response = await endpoint(_request("alice"), limit=20)
 
@@ -596,7 +607,14 @@ async def test_agent_run_metrics_route_returns_recent_metrics_for_admin(monkeypa
                 "event_count": 4,
                 "response_time": 1.25,
             }
-        ]
+        ],
+        "summary": {
+            "count": 1,
+            "status_counts": {"done": 1},
+            "avg_response_time": 1.25,
+            "p50_response_time": 1.25,
+            "p95_response_time": 1.25,
+        },
     }
     assert store.calls == []
 
@@ -625,3 +643,27 @@ async def test_agent_run_metrics_route_rejects_unauthenticated_request(monkeypat
 
     assert exc.value.status_code == 401
     assert store.calls == []
+
+
+
+def test_summarize_metrics_computes_compact_aggregates():
+    summary = chat_routes.agent_runs.summarize_metrics(
+        [
+            {"status": "done", "response_time": 1.0},
+            {"status": "done", "response_time": 2.0},
+            {"status": "error", "response_time": 10.0},
+            {"status": "stopped"},
+        ]
+    )
+
+    assert summary == {
+        "count": 4,
+        "status_counts": {
+            "done": 2,
+            "error": 1,
+            "stopped": 1,
+        },
+        "avg_response_time": 4.333,
+        "p50_response_time": 2.0,
+        "p95_response_time": 10.0,
+    }

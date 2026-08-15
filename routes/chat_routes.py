@@ -546,8 +546,10 @@ def setup_chat_routes(
         if not owner_is_admin_or_single_user(owner):
             raise HTTPException(status_code=403, detail="Agent run metrics are admin-only")
 
+        metrics = agent_runs.recent_metrics(limit)
         return {
-            "metrics": agent_runs.recent_metrics(limit),
+            "metrics": metrics,
+            "summary": agent_runs.summarize_metrics(metrics),
         }
 
 
