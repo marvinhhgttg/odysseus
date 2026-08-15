@@ -19,7 +19,8 @@ import json
 import logging
 import time
 import uuid
-from typing import AsyncGenerator, Dict, Optional
+from collections import deque
+from typing import Any, AsyncGenerator, Dict, Optional
 
 from src.request_context import correlation_context, current_request_id
 
@@ -48,6 +49,51 @@ class _Run:
 
 
 _RUNS: Dict[str, _Run] = {}
+
+# Completed run metrics are deliberately in-memory only. They contain timing,
+# routing and aggregate tool metadata, never prompt or response content.
+_METRICS_HISTORY: deque[dict[str, Any]] = deque(maxlen=100)
+
+
+def _record_metrics(run: _Run, metrics: dict[str, Any]) -> None:
+    """Store one sanitized terminal metrics snapshot for a detached run."""
+    snapshot = dict(metrics)
+    snapshot.update(
+        {
+            "run_id": run.run_id,
+            "request_id": run.request_id,
+            "status": run.status,
+            "event_count": len(run.buffer),
+        }
+    )
+    _METRICS_HISTORY.append(snapshot)
+
+
+def recent_metrics(limit: int = 50) -> list[dict[str, Any]]:
+    """Return newest completed metrics first, bounded to retained history."""
+    try:
+        bounded = max(0, min(int(limit), len(_METRICS_HISTORY)))
+    except (TypeError, ValueError):
+        bounded = 50
+    if bounded == 0:
+        return []
+    return list(reversed(_METRICS_HISTORY))[:bounded]
+
+
+def _store_terminal_metrics(run: _Run) -> None:
+    """Persist the final metrics event only after the run has a terminal status."""
+    for event in reversed(run.buffer):
+        try:
+            payload = json.loads(event.removeprefix("data: ").strip())
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("type") != "metrics":
+            continue
+        data = payload.get("data")
+        if isinstance(data, dict):
+            _record_metrics(run, data)
+        return
+
 
 # How long a FINISHED run (and its full replay buffer) is retained after the
 # last subscriber disconnects, so a reconnect within the window can still
@@ -152,6 +198,8 @@ async def _drain(
     finally:
         duration_ms = int((time.monotonic() - started) * 1000)
         event_count = len(run.buffer)
+
+        _store_terminal_metrics(run)
 
         if run.status == "done":
             logger.info(
