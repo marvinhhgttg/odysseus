@@ -252,6 +252,7 @@ app.add_middleware(_InteractiveActivityMiddleware)
 app.add_middleware(_SlowRequestLogMiddleware)
 
 # ========= AUTH =========
+from routes.google_oauth_routes import router as google_oauth_router
 from routes.auth_routes import setup_auth_routes, SESSION_COOKIE
 
 auth_manager = AuthManager()
@@ -288,6 +289,9 @@ if AUTH_ENABLED:
     AUTH_EXEMPT_PATTERNS = [
         _re.compile(r"^/api/tasks/[^/]+/webhook/[^/]+/?$"),
     ]
+    AUTH_EXEMPT_EXACT = tuple(list(AUTH_EXEMPT_EXACT) + [
+        "/api/auth/integrations/google-drive/callback",
+    ])
 
     def _is_auth_exempt(path: str) -> bool:
         if path in AUTH_EXEMPT_EXACT:
@@ -834,6 +838,20 @@ app.include_router(setup_webhook_routes(webhook_manager, auth_manager, session_m
 from routes.api_token_routes import setup_api_token_routes
 app.include_router(setup_api_token_routes())
 
+# Google Drive Organizer
+from src.services.google_drive_organizer_service import GoogleDriveOrganizerService
+from routes.google_drive_organizer_routes import setup_google_drive_organizer_routes
+from src.integrations import get_integration
+
+class _GoogleDriveIntegrationsStoreAdapter:
+    def get_integration(self, owner_id=None, integration_id=None):
+        return get_integration(integration_id)
+
+google_drive_organizer_service = GoogleDriveOrganizerService(
+    integrations_store=_GoogleDriveIntegrationsStoreAdapter()
+)
+app.include_router(setup_google_drive_organizer_routes(google_drive_organizer_service))
+
 logger.info("Webhook & API token routes initialized")
 
 # Notes (Google Keep-style notes/todos)
@@ -868,6 +886,7 @@ app.include_router(setup_contacts_routes())
 
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
+app.include_router(google_oauth_router)
 
 # ========= ROUTES (kept in app.py) =========
 

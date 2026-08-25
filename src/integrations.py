@@ -76,6 +76,14 @@ INTEGRATION_PRESETS: Dict[str, Dict[str, Any]] = {
             "  GET /api/tags/ — list tags"
         ),
     },
+        "google_drive": {
+        "name": "Google Drive",
+        "auth_type": "bearer",
+        "description": (
+            "Google Drive via OAuth 2.0. Use the Connect flow to obtain and refresh "
+            "tokens securely. Supports Drive file listing and organizer scans."
+        ),
+    },
     "homeassistant": {
         "name": "Home Assistant",
         "auth_type": "bearer",
@@ -163,43 +171,107 @@ def _ensure_data_dir() -> None:
     os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
 
 
+SECRET_FIELDS = (
+    "api_key",
+    "oauth_access_token",
+    "oauth_refresh_token",
+    "oauth_client_secret",
+)
+
+SECRET_SETTINGS_FIELDS = (
+    "access_token",
+    "refresh_token",
+)
+
+
+def _encrypt_secret_value(value: Any) -> Any:
+    if not value:
+        return value
+    text = str(value)
+    return text if is_encrypted(text) else encrypt(text)
+
+
+def _decrypt_secret_value(value: Any) -> Any:
+    if not value:
+        return value
+    text = str(value)
+    return decrypt(text) if is_encrypted(text) else text
+
+
+def _mask_secret_value(value: Any) -> Any:
+    if not value:
+        return value
+    text = str(value)
+    plain = decrypt(text) if is_encrypted(text) else text
+    return f"{plain[:4]}****"
+
+
 def _encrypt_integration_secrets(integrations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return storage-safe copies with API keys encrypted at rest."""
+    """Return storage-safe copies with integration secrets encrypted at rest."""
     safe: List[Dict[str, Any]] = []
     for item in integrations:
         copy = dict(item)
-        api_key = copy.get("api_key", "")
-        if api_key:
-            copy["api_key"] = encrypt(str(api_key))
+        for field in SECRET_FIELDS:
+            if copy.get(field):
+                copy[field] = _encrypt_secret_value(copy.get(field))
+        settings = copy.get("settings")
+        if isinstance(settings, dict):
+            settings_copy = dict(settings)
+            for field in SECRET_SETTINGS_FIELDS:
+                if settings_copy.get(field):
+                    settings_copy[field] = _encrypt_secret_value(settings_copy.get(field))
+            copy["settings"] = settings_copy
         safe.append(copy)
     return safe
 
 
 def _decrypt_integration_secrets(integrations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return runtime copies with API keys decrypted for callers."""
+    """Return runtime copies with integration secrets decrypted for callers."""
     decoded: List[Dict[str, Any]] = []
     for item in integrations:
         copy = dict(item)
-        api_key = copy.get("api_key", "")
-        if api_key:
-            copy["api_key"] = decrypt(str(api_key))
+        for field in SECRET_FIELDS:
+            if copy.get(field):
+                copy[field] = _decrypt_secret_value(copy.get(field))
+        settings = copy.get("settings")
+        if isinstance(settings, dict):
+            settings_copy = dict(settings)
+            for field in SECRET_SETTINGS_FIELDS:
+                if settings_copy.get(field):
+                    settings_copy[field] = _decrypt_secret_value(settings_copy.get(field))
+            copy["settings"] = settings_copy
         decoded.append(copy)
     return decoded
 
 
 def _has_plaintext_api_key(integrations: List[Dict[str, Any]]) -> bool:
-    return any(
-        bool(item.get("api_key")) and not is_encrypted(str(item.get("api_key")))
-        for item in integrations
-    )
+    for item in integrations:
+        for field in SECRET_FIELDS:
+            value = item.get(field)
+            if value and not is_encrypted(str(value)):
+                return True
+        settings = item.get("settings")
+        if isinstance(settings, dict):
+            for field in SECRET_SETTINGS_FIELDS:
+                value = settings.get(field)
+                if value and not is_encrypted(str(value)):
+                    return True
+    return False
 
 
 def mask_integration_secret(integration: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy safe for API responses."""
     safe = dict(integration)
-    api_key = safe.get("api_key", "")
-    if api_key:
-        safe["api_key"] = f"{str(api_key)[:4]}****"
+    for field in SECRET_FIELDS:
+        if safe.get(field):
+            safe[field] = _mask_secret_value(safe.get(field))
+    settings = safe.get("settings")
+    if isinstance(settings, dict):
+        settings_copy = dict(settings)
+        for field in SECRET_SETTINGS_FIELDS:
+            if settings_copy.get(field):
+                settings_copy[field] = _mask_secret_value(settings_copy.get(field))
+        safe["settings"] = settings_copy
     return safe
 
 
@@ -282,9 +354,23 @@ def add_integration(data: Dict[str, Any]) -> Dict[str, Any]:
     integration.setdefault("api_key", "")
     integration.setdefault("name", "")
     integration.setdefault("base_url", "")
+    integration.setdefault("provider", preset_key or "")
+    integration.setdefault("oauth_provider", "")
+    integration.setdefault("oauth_access_token", "")
+    integration.setdefault("oauth_refresh_token", "")
+    integration.setdefault("oauth_token_type", "")
+    integration.setdefault("oauth_scope", "")
+    integration.setdefault("oauth_expires_at", None)
+    integration.setdefault("oauth_client_id", "")
+    integration.setdefault("oauth_client_secret", "")
+    integration.setdefault("oauth_connected_email", "")
+    integration.setdefault("oauth_connected_subject", "")
+    integration.setdefault("settings", {})
 
     if not isinstance(integration.get("name"), str) or not integration["name"].strip():
         raise HTTPException(400, "Integration name is required")
+    if integration.get("provider") == "google_drive" and not str(integration.get("base_url") or "").strip():
+        integration["base_url"] = "https://www.googleapis.com"
     try:
         integration["base_url"] = _normalize_integration_base_url(integration.get("base_url"))
     except ValueError as exc:
@@ -301,6 +387,8 @@ def update_integration(integration_id: str, data: Dict[str, Any]) -> Optional[Di
     data = dict(data)
     if "name" in data and (not isinstance(data["name"], str) or not data["name"].strip()):
         raise HTTPException(400, "Integration name is required")
+    if data.get("provider") == "google_drive" and "base_url" not in data:
+        data["base_url"] = "https://www.googleapis.com"
     if "base_url" in data:
         try:
             data["base_url"] = _normalize_integration_base_url(data["base_url"])

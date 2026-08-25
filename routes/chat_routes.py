@@ -2005,14 +2005,4 @@ def setup_chat_routes(
 
         return StreamingResponse(stream_rewrite(), media_type="text/event-stream")
 
-
-    @router.get("/api/agent-runs/metrics/recent")
-    async def get_recent_agent_run_metrics(limit: int = 50):
-        safe_limit = max(1, min(int(limit), 100))
-        metrics = agent_runs.recent_metrics(limit=safe_limit)
-        return {
-            "items": metrics,
-            "summary": agent_runs.summarize_metrics(metrics),
-        }
-
     return router

@@ -1,0 +1,76 @@
+from typing import Any, Dict, List, Optional
+
+
+class GoogleDriveOrganizerService:
+    def __init__(self, approval_service=None, integrations_store=None):
+        self.approval_service = approval_service
+        self.integrations_store = integrations_store
+
+    def start_scan(self, owner_id: str, integration_id: str, policy_id: Optional[str], scope: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "scan_run_id": "scan_stub",
+            "status": "queued",
+            "owner_id": owner_id,
+            "integration_id": integration_id,
+            "policy_id": policy_id,
+            "scope": scope,
+        }
+
+    def build_plan(self, owner_id: str, integration_id: str, scan_run_id: str, policy_id: Optional[str]) -> Dict[str, Any]:
+        return {
+            "plan_id": "plan_stub",
+            "status": "ready",
+            "summary": {
+                "total_files": 0,
+                "proposed_actions": 0,
+                "duplicates": 0,
+                "uncertain": 0,
+            },
+            "owner_id": owner_id,
+            "integration_id": integration_id,
+            "scan_run_id": scan_run_id,
+            "policy_id": policy_id,
+        }
+
+    def get_plan(self, owner_id: str, plan_id: str) -> Dict[str, Any]:
+        return {
+            "plan_id": plan_id,
+            "status": "ready",
+            "owner_id": owner_id,
+            "summary": {
+                "total_files": 0,
+                "proposed_actions": 0,
+                "duplicates": 0,
+                "uncertain": 0,
+            },
+        }
+
+    def list_actions(self, owner_id: str, plan_id: str) -> Dict[str, Any]:
+        return {
+            "plan_id": plan_id,
+            "owner_id": owner_id,
+            "actions": [],
+        }
+
+    def create_approval_request(self, owner_id: str, plan_id: str, selection_mode: str, action_ids: List[str]) -> Dict[str, Any]:
+        return {
+            "approval_id": "approval_stub",
+            "status": "pending",
+            "owner_id": owner_id,
+            "plan_id": plan_id,
+            "selection_mode": selection_mode,
+            "action_ids": action_ids,
+            "fingerprint": "fingerprint_stub",
+        }
+
+    def apply_plan(self, owner_id: str, plan_id: str, approval_id: str, expected_fingerprint: str) -> Dict[str, Any]:
+        return {
+            "plan_id": plan_id,
+            "approval_id": approval_id,
+            "expected_fingerprint": expected_fingerprint,
+            "status": "applied_stub",
+            "owner_id": owner_id,
+            "applied": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
