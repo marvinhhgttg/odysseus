@@ -105,3 +105,12 @@ _scratch/
 
 # Local evaluation reports
 /.artifacts/evals/
+
+# Local LangGraph configuration
+config/langgraph.local.env
+runtime/agent/
+
+# Backup files
+*.bak
+*.bak.*
+*.bak-*
