@@ -1125,31 +1125,77 @@ def _endpoint_lookup_keys(endpoint_url: str) -> List[str]:
         pass
     return keys
 
-# Admin tool keywords — if the last user message contains any of these, include admin tools
+# Admin tool keywords — unambiguous management terms. Any single hit
+# from this group is enough to include admin tools; these words rarely
+# appear as ordinary content nouns.
 _ADMIN_KEYWORDS = [
-    "session", "sessions", "chat", "chats", "conversation", "conversations",
     "delete", "fork", "truncate",
-    "archive", "rename", "endpoint", "endpoints", "api key",
-    "webhook", "webhooks", "token", "tokens", "mcp", "server", "skill", "skills",
-    "task", "tasks", "schedule", "cron", "setting", "settings", "preference",
+    "archive", "rename", "api key",
     "configure", "config", "setup", "manage", "admin", "pipeline", "second opinion",
     "list models", "switch model", "change model", "theme", "create theme",
-    # Documents — "show/list/read my docs", "open my notes file", etc.
-    # Without these, manage_documents never reaches the prompt and the
-    # agent flails (curl, bash) instead of using the right tool.
+]
+
+# Context-dependent nouns — these can refer either to admin/management
+# targets ("manage my sessions", "delete this webhook") or to ordinary data
+# sources/objects being read or acted on ("use the mcp server to fetch my
+# notes and reminders", "summarize my tasks for today"). A bare hit is not
+# enough signal on its own; require a nearby management verb too, so a
+# multi-tool data-gathering prompt (calendar, notes, reminders, mcp servers)
+# doesn't drag in the full admin tool set by accident.
+_ADMIN_CONTEXT_NOUNS = [
+    "session", "sessions", "chat", "chats", "conversation", "conversations",
+    "endpoint", "endpoints",
+    "webhook", "webhooks", "token", "tokens", "mcp", "server", "skill", "skills",
+    "task", "tasks", "schedule", "cron", "setting", "settings", "preference",
     "document", "documents", "doc", "docs", "library", "tidy",
     "note", "notes", "todo", "todos", "reminder", "reminders",
 ]
 
+# Management verbs that, combined with a context noun above, indicate the
+# user actually wants to administer/configure that object rather than just
+# read or act on its content.
+_ADMIN_VERBS = [
+    "manage", "delete", "remove", "add", "create", "edit", "update",
+    "configure", "set up", "setup", "enable", "disable", "disconnect",
+    "connect", "install", "uninstall", "reset", "rename", "schedule",
+    "list my", "show my settings", "verwalte", "lösche", "einrichten",
+    "konfigurier", "aktivier", "deaktivier", "hinzufügen", "entfernen",
+]
+
+
+def _word_hit(term: str, text: str) -> bool:
+    """True if `term` occurs in `text` on a word boundary.
+
+    Plain substring checks cause false positives across languages, e.g.
+    the English admin keyword "theme" is a substring of the German word
+    "Themen" (topics). Word-boundary matching avoids that while still
+    allowing multi-word phrases like "list models" to match normally.
+    """
+    return re.search(r"(?<![a-zA-Z0-9\u00e4\u00f6\u00fc\u00df])" + re.escape(term) + r"(?![a-zA-Z0-9\u00e4\u00f6\u00fc\u00df])", text) is not None
+
+
 def _detect_admin_intent(messages: List[Dict]) -> bool:
-    """Check if the last user message suggests admin/management tool usage."""
+    """Check if the last user message suggests admin/management tool usage.
+
+    Unambiguous keywords always fire (on word boundaries, to avoid cross-
+    language substring collisions like "theme" inside German "Themen").
+    Context-dependent nouns (mcp, note, task, server, etc.) only fire when
+    paired with a management verb, so prompts that merely *use* those nouns
+    as data sources ("use the mcp calendar server to fetch my notes and
+    reminders") don't pull in the full admin tool set.
+    """
     for msg in reversed(messages):
         if msg.get("role") == "user":
             content = msg.get("content", "")
             if isinstance(content, list):
                 content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
             content_lower = content.lower()
-            return any(kw in content_lower for kw in _ADMIN_KEYWORDS)
+            if any(_word_hit(kw, content_lower) for kw in _ADMIN_KEYWORDS):
+                return True
+            if any(_word_hit(noun, content_lower) for noun in _ADMIN_CONTEXT_NOUNS) and \
+               any(_word_hit(verb, content_lower) for verb in _ADMIN_VERBS):
+                return True
+            return False
     return False
 
 
@@ -3498,15 +3544,16 @@ async def stream_agent_loop(
     # the fenced-block path is used instead of native function calling.
     _is_ollama_native = _is_ollama_native_url(endpoint_url or "")
     _ollama_openai_compat = _is_ollama_openai_compat_url(endpoint_url or "")
+    # OpenAI-compatible local endpoints can accept the same function-schema
+    # format as remote OpenAI-style providers. Native Ollama (/api/chat) stays
+    # text-only unless explicitly enabled because some local models terminate
+    # after emitting an incomplete native tool-call token.
     if _endpoint_supports is True:
         _is_api_model = True
-    elif (
-        _endpoint_supports is False
-        or _model_no_tools
-        or _is_ollama_native
-        or _ollama_openai_compat
-    ):
+    elif _endpoint_supports is False or _model_no_tools or _is_ollama_native:
         _is_api_model = False
+    elif _ollama_openai_compat:
+        _is_api_model = True
     else:
         _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
     _compact_agent_prompt = _is_api_model or _is_ollama_native or _ollama_openai_compat
@@ -3779,10 +3826,27 @@ async def stream_agent_loop(
                     and t.get("name") not in disabled_tools
                 ]
         else:
-            # Local: only MCP schemas when message suggests MCP tool usage
+            # Local: only MCP schemas when message suggests MCP tool usage,
+            # further narrowed by RAG-selected _relevant_tools to avoid
+            # dumping every registered MCP server's schemas into a small
+            # local model's limited context window.
             _last_content = _last_user.lower()
             _wants_mcp = any(kw in _last_content for kw in _MCP_KEYWORDS)
-            all_tool_schemas = mcp_schemas if (_wants_mcp and mcp_schemas) else []
+            if _wants_mcp and mcp_schemas:
+                if _relevant_tools:
+                    all_tool_schemas = [
+                        s for s in mcp_schemas
+                        if s.get("function", {}).get("name") in _relevant_tools
+                    ]
+                    # Fallback: if RAG filtering wiped everything out despite
+                    # an explicit MCP-keyword match, keep original behavior
+                    # so the tool call isn't silently lost.
+                    if not all_tool_schemas:
+                        all_tool_schemas = mcp_schemas
+                else:
+                    all_tool_schemas = mcp_schemas
+            else:
+                all_tool_schemas = []
         agent_stream_timeout = int(get_setting("agent_stream_timeout_seconds", 300) or 300)
 
         _tool_names_sent = [t.get("function", {}).get("name") for t in (all_tool_schemas or []) if t.get("function")]
