@@ -2,7 +2,8 @@
 
 import logging
 import os
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Dict, Any, List
 
 from fastapi import APIRouter, HTTPException, Form, Request
 
@@ -11,6 +12,53 @@ from core.constants import DEFAULT_HOST, DATA_DIR
 from core.middleware import require_admin
 
 logger = logging.getLogger(__name__)
+
+
+def _google_oauth_integration_status(
+    integration: Dict[str, Any],
+    *,
+    now: datetime,
+    last_refresh_at_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """Per-integration OAuth health snapshot for the /health endpoint.
+
+    Never returns tokens or secrets — only booleans, timestamps, and the
+    connected email. Callers still need admin auth (require_admin) upstream.
+    """
+    integration_id = str(integration.get("id") or "?")
+    settings = integration.get("settings") or {}
+    expires_at_raw = integration.get("oauth_expires_at")
+
+    expires_at_dt = None
+    if expires_at_raw:
+        try:
+            parsed = datetime.fromisoformat(str(expires_at_raw))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            expires_at_dt = parsed
+        except (TypeError, ValueError):
+            expires_at_dt = None
+
+    seconds_until_expiry = None
+    is_expired = None
+    if expires_at_dt is not None:
+        delta = (expires_at_dt - now).total_seconds()
+        seconds_until_expiry = int(delta)
+        is_expired = delta <= 0
+
+    return {
+        "integration_id": integration_id,
+        "provider": integration.get("provider"),
+        "enabled": bool(integration.get("enabled", True)),
+        "connected_email": integration.get("oauth_connected_email", ""),
+        "expires_at": expires_at_dt.isoformat() if expires_at_dt else None,
+        "seconds_until_expiry": seconds_until_expiry,
+        "is_expired": is_expired,
+        "has_refresh_token": bool(
+            integration.get("oauth_refresh_token") or settings.get("refresh_token")
+        ),
+        "last_refresh_at": last_refresh_at_map.get(integration_id),
+    }
 
 
 def setup_diagnostics_routes(
@@ -28,6 +76,66 @@ def setup_diagnostics_routes(
         require_admin(request)
         from src.service_health import collect_service_health
         return await collect_service_health(rag_manager, memory_vector)
+
+    @router.get("/api/health/google-oauth")
+    async def get_google_oauth_health(request: Request) -> Dict[str, Any]:
+        """Per-integration Google OAuth token health.
+
+        Emits, for each enabled Google integration:
+          - integration_id, provider, connected_email
+          - expires_at + seconds_until_expiry + is_expired
+          - has_refresh_token
+          - last_refresh_at (from the in-process maintenance loop state)
+
+        Plus a top-level sweep summary from
+        google_oauth_maintenance.sweep_status(): last_sweep_at,
+        last_result counts, and any errors.
+
+        Safe to poll from morning briefings and dashboards. Never returns
+        tokens, secrets, or IDs beyond the integration_id already visible in
+        the UI. Admin-only via require_admin.
+        """
+        require_admin(request)
+        from src.integrations import load_integrations
+        from src.services.google_oauth_maintenance import sweep_status
+
+        status = sweep_status()
+        now = datetime.now(timezone.utc)
+
+        last_refresh_map = status.get("last_refresh_at") or {}
+        integrations_report: List[Dict[str, Any]] = []
+        try:
+            items = load_integrations() or []
+        except Exception as exc:
+            logger.exception("google-oauth health: load_integrations failed")
+            raise HTTPException(500, f"load_integrations failed: {exc}")
+
+        google_providers = {"google_drive"}
+        for integration in items:
+            if not isinstance(integration, dict):
+                continue
+            provider = str(integration.get("provider") or "").lower()
+            preset = str(integration.get("preset") or "").lower()
+            if provider not in google_providers and preset not in google_providers:
+                continue
+            integrations_report.append(
+                _google_oauth_integration_status(
+                    integration, now=now, last_refresh_at_map=last_refresh_map
+                )
+            )
+
+        # Convenience overall flag for dashboards: "ok" if we have at least
+        # one enabled integration that is not expired.
+        healthy = any(
+            it["enabled"] and it["is_expired"] is False
+            for it in integrations_report
+        )
+        return {
+            "status": "ok" if healthy else "degraded",
+            "checked_at": now.isoformat(),
+            "sweep": status,
+            "integrations": integrations_report,
+        }
 
     @router.get("/api/diagnostics/logs")
     async def get_diagnostics_logs(request: Request, limit: int = 200) -> Dict[str, Any]:

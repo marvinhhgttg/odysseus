@@ -34,6 +34,47 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# In-process last-sweep state, populated by run_sweep() and consumed by the
+# /api/health/google-oauth endpoint. This is intentionally process-local and
+# not persisted — the endpoint is meant for "is the loop alive and doing
+# something useful right now" liveness, not durable audit history. On process
+# restart last_sweep_at is None until the first sweep runs (typically ~500 ms
+# after startup).
+_LAST_SWEEP: Dict[str, Any] = {
+    "last_sweep_at": None,        # datetime, UTC
+    "last_result": None,          # SweepResult
+    "last_refresh_at": {},        # {integration_id: datetime}
+}
+
+
+def sweep_status() -> Dict[str, Any]:
+    """Return a JSON-serialisable snapshot of the last sweep, for /health."""
+    result = _LAST_SWEEP.get("last_result")
+    last_sweep_at = _LAST_SWEEP.get("last_sweep_at")
+    return {
+        "last_sweep_at": last_sweep_at.isoformat() if last_sweep_at else None,
+        "last_result": {
+            "checked": result.checked if result else None,
+            "refreshed": result.refreshed if result else None,
+            "skipped_fresh": result.skipped_fresh if result else None,
+            "skipped_no_refresh_token": (
+                result.skipped_no_refresh_token if result else None
+            ),
+            "errors": list(result.errors) if result else None,
+        } if result else None,
+        "last_refresh_at": {
+            k: v.isoformat() for k, v in _LAST_SWEEP.get("last_refresh_at", {}).items()
+        },
+    }
+
+
+def _reset_state_for_tests() -> None:
+    """Test-only helper: clear the module-level sweep state between tests."""
+    _LAST_SWEEP["last_sweep_at"] = None
+    _LAST_SWEEP["last_result"] = None
+    _LAST_SWEEP["last_refresh_at"] = {}
+
+
 @dataclass
 class SweepResult:
     """Summary of one maintenance sweep. Intended for logging + tests."""
@@ -142,12 +183,15 @@ async def run_sweep(
         try:
             await refresh(integration)
             result.refreshed += 1
+            _LAST_SWEEP["last_refresh_at"][integration_id] = now
             logger.info("drive-oauth sweep: refreshed integration %s", integration_id)
         except Exception as exc:
             msg = f"{integration_id}: {exc}"
             result.errors.append(msg)
             logger.exception("drive-oauth sweep: refresh failed for %s", integration_id)
 
+    _LAST_SWEEP["last_sweep_at"] = now
+    _LAST_SWEEP["last_result"] = result
     logger.info(result.as_log_line())
     return result
 
