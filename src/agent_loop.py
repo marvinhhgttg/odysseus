@@ -185,6 +185,20 @@ def _grounding_term_supported(term: str, evidence: str) -> bool:
     if normalized in canonical_evidence:
         return True
 
+    # Transliteration tolerance: German answers routinely use exonyms
+    # (Aschgabat, Tokio, Peking, München) while cited sources use the
+    # English/original form (Ashgabat, Tokyo, Beijing, Muenchen). Missing
+    # this equivalence was rejecting fully-supported answers and replacing
+    # them with the "not enough evidence" fallback. The variant set is
+    # small, conservative, and rule-based - see grounding_transliteration.
+    try:
+        from src.services.grounding_transliteration import transliteration_variants
+        for variant in transliteration_variants(normalized):
+            if variant in canonical_evidence:
+                return True
+    except Exception:
+        logger.exception("transliteration lookup failed; ignoring variants")
+
     if "-" not in normalized:
         return False
 
