@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
-from fastapi import APIRouter, HTTPException, Form, Request
+from fastapi import APIRouter, Body, HTTPException, Form, Request
 
 from services.youtube.youtube_handler import extract_youtube_id, extract_transcript_async
 from core.constants import DEFAULT_HOST, DATA_DIR
@@ -136,6 +136,44 @@ def setup_diagnostics_routes(
             "sweep": status,
             "integrations": integrations_report,
         }
+
+    @router.get("/api/diagnostics/grounding")
+    async def get_grounding_diagnostics(request: Request) -> Dict[str, Any]:
+        """Recent web-grounding rejections and fallbacks.
+
+        Returns counts and the last 10 events for both categories:
+        - rejections: individual answer blocks the grounding filter stripped
+          because their concrete terms could not be matched against the cited
+          source (with unsupported_terms and the block preview).
+        - fallbacks: turns where the whole model answer was replaced with the
+          "not enough evidence" template.
+
+        In-process ring buffer, bounded to 50 entries per category. Admin-only.
+        """
+        require_admin(request)
+        from src.services.grounding_diagnostics import rejection_status
+        return rejection_status()
+
+    @router.post("/api/diagnostics/grounding/explain")
+    async def explain_grounding(
+        request: Request,
+        payload: Dict[str, Any] = Body(default={}),
+    ) -> Dict[str, Any]:
+        """Dry-run the grounding filter for a given (answer, sources) pair.
+
+        Expects {"answer": str, "sources": [{"url": ..., "title": ..., "snippet": ...}, ...]}.
+        Returns per-block reports with concrete_terms + how each term matched
+        (exact | transliteration | hyphen_compound | unsupported), plus an
+        overall verdict clean|trimmed|fallback. Does NOT touch the live ring
+        buffer — use this to reproduce a suspected filter bug end-to-end.
+        """
+        require_admin(request)
+        answer = str(payload.get("answer") or "")
+        sources = payload.get("sources") or []
+        if not isinstance(sources, list):
+            raise HTTPException(400, "sources must be a list")
+        from src.services.grounding_diagnostics import explain_answer
+        return explain_answer(answer, sources)
 
     @router.get("/api/health/agent-prompt-budget")
     async def get_agent_prompt_budget(request: Request) -> Dict[str, Any]:

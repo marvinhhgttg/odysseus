@@ -277,6 +277,15 @@ def _filter_web_grounded_answer(answer: str, sources: list[Dict]) -> str:
         for source in indexed_sources
     }
     if not indexed_sources:
+        try:
+            from src.services.grounding_diagnostics import record_fallback_returned
+            record_fallback_returned(
+                "no_indexed_sources",
+                sources_count=len(sources or []),
+                answer_preview=answer or "",
+            )
+        except Exception:
+            logger.exception("grounding-diag: record_fallback_returned failed")
         return _WEB_GROUNDING_FALLBACK
 
     kept = []
@@ -352,6 +361,16 @@ def _filter_web_grounded_answer(answer: str, sources: list[Dict]) -> str:
                     urls,
                     block[:1000],
                 )
+                try:
+                    from src.services.grounding_diagnostics import record_rejection
+                    record_rejection(
+                        "no_matched_source",
+                        block,
+                        citations=citation_numbers,
+                        urls=urls,
+                    )
+                except Exception:
+                    logger.exception("grounding-diag: record_rejection failed")
                 rejected += 1
             continue
 
@@ -373,6 +392,17 @@ def _filter_web_grounded_answer(answer: str, sources: list[Dict]) -> str:
                 unsupported_terms,
                 block[:500],
             )
+            try:
+                from src.services.grounding_diagnostics import record_rejection
+                record_rejection(
+                    "unsupported_terms",
+                    block,
+                    citations=citation_numbers,
+                    urls=urls,
+                    unsupported_terms=unsupported_terms,
+                )
+            except Exception:
+                logger.exception("grounding-diag: record_rejection failed")
             rejected += 1
 
     deduplicated = []
@@ -406,6 +436,15 @@ def _filter_web_grounded_answer(answer: str, sources: list[Dict]) -> str:
         )
     ]
     if not substantive:
+        try:
+            from src.services.grounding_diagnostics import record_fallback_returned
+            record_fallback_returned(
+                "no_substantive_block",
+                sources_count=len(indexed_sources),
+                answer_preview=answer or "",
+            )
+        except Exception:
+            logger.exception("grounding-diag: record_fallback_returned failed")
         return _WEB_GROUNDING_FALLBACK
 
     result = "\n\n".join(kept).strip()
