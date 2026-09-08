@@ -117,13 +117,15 @@ def internal_api_base() -> str:
     running server over HTTP. Resolution order:
       1. ODYSSEUS_INTERNAL_BASE  - explicit override (e.g. behind a TLS proxy).
       2. APP_PORT                - http://127.0.0.1:$APP_PORT (docker-compose).
-      3. Fallback http://127.0.0.1:7000 - legacy default.
+      3. Fallback http://127.0.0.1:9001 - Odysseus default port.
 
     127.0.0.1 (not "localhost") avoids IPv6/DNS ambiguity for a strictly-local
-    call. Without this, loopback tools fail with "All connection attempts
-    failed" whenever the server is not on port 7000.
+    call. The default port 9001 matches the shipped LaunchAgent and
+    docker-compose files. The legacy default of 7000 was removed because on
+    macOS port 7000 is claimed by the AirPlay Receiver in ControlCenter, which
+    caused internal-tool calls to fail with HTTP 403 before reaching Odysseus.
     """
     override = os.environ.get("ODYSSEUS_INTERNAL_BASE")
     if override:
         return override.rstrip("/")
-    return f"http://127.0.0.1:{os.environ.get('APP_PORT', '7000')}"
+    return f"http://127.0.0.1:{os.environ.get('APP_PORT', '9001')}"

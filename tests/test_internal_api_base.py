@@ -15,8 +15,17 @@ def _base(monkeypatch, **env):
     return cc.internal_api_base()
 
 
-def test_default_is_legacy_7000(monkeypatch):
-    assert _base(monkeypatch) == "http://127.0.0.1:7000"
+def test_default_is_9001(monkeypatch):
+    # Default matches the shipped LaunchAgent + docker-compose port. Port 7000
+    # is intentionally avoided because macOS ControlCenter (AirPlay Receiver)
+    # claims it and answers loopback traffic with HTTP 403, which historically
+    # broke internal-tool calls before they ever reached Odysseus.
+    assert _base(monkeypatch) == "http://127.0.0.1:9001"
+
+
+def test_default_is_not_port_7000_regression(monkeypatch):
+    # Explicit regression guard for the macOS ControlCenter / AirPlay collision.
+    assert ":7000" not in _base(monkeypatch)
 
 
 def test_app_port_is_honored(monkeypatch):
