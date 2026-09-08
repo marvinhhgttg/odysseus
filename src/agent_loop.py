@@ -168,6 +168,46 @@ def _canonicalize_grounding_aliases(value: object) -> str:
     return normalized
 
 
+def _has_evidence_overlap(block: str, evidence: str) -> tuple[int, int]:
+    """Return (overlap_count, block_word_count) between block and evidence.
+
+    A block word "matches" evidence when either its lower-cased form, one of
+    its transliteration variants, or a short-suffix-stripped stem occurs in
+    the evidence. Handles the German exonym + genitive/plural case that a
+    naive set-overlap misses (e.g. "Aschgabat"/"Turkmenistans" vs.
+    "ashgabat"/"turkmenistan"). Word-length threshold 4 filters out common
+    stopwords without a full stopword list.
+    """
+    try:
+        from src.services.grounding_transliteration import transliteration_variants
+    except Exception:
+        transliteration_variants = lambda x: set()  # noqa: E731
+
+    block_words = [
+        w for w in re.findall(r"[a-zäöüß]{4,}", block.casefold())
+    ]
+    if not block_words:
+        return 0, 0
+
+    def _stems(word: str) -> set:
+        variants = {word}
+        variants |= transliteration_variants(word)
+        # Strip common German inflection endings after we have all variants.
+        for suffix in ("es", "en", "n", "s"):
+            for v in list(variants):
+                if len(v) > len(suffix) + 3 and v.endswith(suffix):
+                    variants.add(v[: -len(suffix)])
+        return variants
+
+    hit = 0
+    for word in block_words:
+        for stem in _stems(word):
+            if stem in evidence:
+                hit += 1
+                break
+    return hit, len(block_words)
+
+
 def _grounding_term_supported(term: str, evidence: str) -> bool:
     """Check a high-signal term against one source's evidence.
 
@@ -338,6 +378,65 @@ def _filter_web_grounded_answer(answer: str, sources: list[Dict]) -> str:
                 block = (
                     f"{block.rstrip()} "
                     f"[{source_number}]({source_url})"
+                )
+
+        # implicit-citation-match: try to score the block against each source
+        # separately. When there is no URL, no [N], and no named-publisher
+        # match, but the block's concrete terms are actually supported by
+        # exactly one source's evidence, treat that source as an implicit
+        # citation and append [N] so the downstream substantive-check +
+        # future re-runs see the reference. This is the third silent-fail
+        # class we're fixing (after the transliteration path):
+        # a correct answer without a visible [N] should not be wiped out.
+        if not matched_sources:
+            candidate_matches = []
+            terms = _concrete_grounding_terms(block)
+            for index, source in enumerate(indexed_sources, 1):
+                source_evidence = _source_grounding_text(source)
+                if not source_evidence:
+                    continue
+                # A source is a candidate when at least one concrete term is
+                # supported by it, OR when no terms were extracted at all and
+                # a substantial fraction of the block's words appears in the
+                # evidence. The second case handles short answers with no
+                # extractable proper names, like "Aschgabat ist die Hauptstadt
+                # Turkmenistans" - "aschgabat" and "turkmenistan" are both
+                # concrete terms only if the extractor treats them as such;
+                # if not, we fall back to a word-overlap heuristic.
+                if terms:
+                    if all(
+                        _grounding_term_supported(term, source_evidence)
+                        for term in terms
+                    ):
+                        candidate_matches.append((index, source))
+                else:
+                    overlap, total = _has_evidence_overlap(
+                        block, source_evidence
+                    )
+                    if total == 0:
+                        continue
+                    # require at least half of the block content words to
+                    # appear in this source's evidence, with at least 2 hits
+                    # so a single common word cannot carry the decision
+                    if overlap * 2 >= total and overlap >= 2:
+                        candidate_matches.append((index, source))
+            # Only accept when exactly one source matches. Multiple candidates
+            # would mean the block cannot be uniquely attributed and we should
+            # not silently pick one.
+            if len(candidate_matches) == 1:
+                source_number, implicit_source = candidate_matches[0]
+                matched_sources.append(implicit_source)
+                source_url = str(
+                    implicit_source.get("url") or ""
+                ).rstrip("/")
+                block = (
+                    f"{block.rstrip()} "
+                    f"[{source_number}]({source_url})"
+                )
+                logger.info(
+                    "[web-grounding] implicit-citation match: source=%d url=%s "
+                    "terms=%s block=%r",
+                    source_number, source_url, terms, block[:300],
                 )
 
         # Only an explicit Markdown heading may survive without a citation.
