@@ -982,6 +982,55 @@ def _compact_tool_line(name: str, section: str) -> str:
     return f"- `{name}` — " + lines[0][:160]
 
 
+def _assemble_prompt_with_budget(
+    tool_names: set,
+    disabled_tools: set = None,
+    compact: bool = False,
+) -> str:
+    """Wrap _assemble_prompt with prompt-size observability + auto-compact.
+
+    Measures the assembled prompt against ODYSSEUS_PROMPT_HARD_TOKENS /
+    ODYSSEUS_PROMPT_SOFT_TOKENS. If a full-render prompt exceeds the hard
+    budget, retries once with compact=True. Records every decision into the
+    ring buffer read by /api/health/agent-prompt-budget. Never raises — a
+    measurement failure logs and falls back to the original render.
+    """
+    prompt = _assemble_prompt(tool_names, disabled_tools, compact=compact)
+    try:
+        from src.services.prompt_budget import (
+            evaluate_prompt_budget,
+            record_prompt_size,
+        )
+        decision = evaluate_prompt_budget(prompt)
+        tool_count = len((tool_names or set()) - (disabled_tools or set()))
+
+        if decision.is_over_hard and not compact:
+            logger.warning(
+                "%s tool_count=%d retrying with compact=True",
+                decision.message, tool_count,
+            )
+            record_prompt_size(decision, tool_count=tool_count, compact=False)
+            prompt = _assemble_prompt(tool_names, disabled_tools, compact=True)
+            decision = evaluate_prompt_budget(prompt)
+            record_prompt_size(decision, tool_count=tool_count, compact=True)
+            if decision.is_over_hard:
+                logger.warning(
+                    "agent-prompt still over hard budget after compact retry: "
+                    "est_tokens=%d hard=%d tool_count=%d",
+                    decision.estimated_tokens, decision.hard_limit, tool_count,
+                )
+        else:
+            if decision.is_warn:
+                logger.info(
+                    "%s tool_count=%d compact=%s",
+                    decision.message, tool_count, compact,
+                )
+            record_prompt_size(decision, tool_count=tool_count, compact=compact)
+    except Exception:
+        logger.exception("prompt-budget measurement failed; using un-budgeted prompt")
+    return prompt
+
+
 def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False) -> str:
     """Build the system prompt with only the specified tools included."""
     disabled = disabled_tools or set()
@@ -2525,7 +2574,7 @@ def _build_base_prompt(
         tool_names = set(relevant_tools) | {"ask_user", "update_plan"}
         if needs_admin:
             tool_names |= _ADMIN_TOOLS
-        agent_prompt = _assemble_prompt(tool_names, disabled, compact=compact)
+        agent_prompt = _assemble_prompt_with_budget(tool_names, disabled, compact=compact)
     else:
         # Fallback: full prompt (RAG unavailable)
         agent_prompt = AGENT_SYSTEM_PROMPT
@@ -2535,11 +2584,11 @@ def _build_base_prompt(
                 "generate_image", "suggest_document",
                 "chat_with_model", "ask_teacher", "list_models",
             }
-            agent_prompt = _assemble_prompt(
+            agent_prompt = _assemble_prompt_with_budget(
                 set(TOOL_SECTIONS.keys()) - mgmt_tools, disabled, compact=compact
             )
         elif compact:
-            agent_prompt = _assemble_prompt(set(TOOL_SECTIONS.keys()), disabled, compact=True)
+            agent_prompt = _assemble_prompt_with_budget(set(TOOL_SECTIONS.keys()), disabled, compact=True)
 
     # Inject the Level-0 skill index — one line per skill so the agent
     # knows what canonical procedures exist. Includes published skills

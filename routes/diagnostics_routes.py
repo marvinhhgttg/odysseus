@@ -137,6 +137,23 @@ def setup_diagnostics_routes(
             "integrations": integrations_report,
         }
 
+    @router.get("/api/health/agent-prompt-budget")
+    async def get_agent_prompt_budget(request: Request) -> Dict[str, Any]:
+        """Recent agent-prompt sizes and budget verdicts.
+
+        Emits the last 50 assembled system prompts as
+        {estimated_tokens, kind, tool_count, compact, at}, plus counts of
+        soft-budget warnings and hard-budget overruns and the max size seen
+        in the window. Reads process-local state only; no persistence.
+
+        Useful for spotting when a query mix pushes the prompt past what the
+        currently selected local model can hold, before users see degraded
+        tool-call behaviour.
+        """
+        require_admin(request)
+        from src.services.prompt_budget import prompt_budget_status
+        return prompt_budget_status()
+
     @router.get("/api/diagnostics/logs")
     async def get_diagnostics_logs(request: Request, limit: int = 200) -> Dict[str, Any]:
         require_admin(request)
