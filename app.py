@@ -1270,6 +1270,25 @@ async def _startup_event():
     from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
     _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
 
+    # Proactive Google OAuth token refresh. Reactive refresh in
+    # ensure_fresh_google_token() only kicks in when a request comes in
+    # inside the last 5 minutes before expiry; if Odysseus sits idle for
+    # days, the access_token can silently expire and the *next* user
+    # action sees a stale-token error before the reactive path runs. This
+    # loop sweeps hourly and refreshes any Google integration whose token
+    # expires inside the next 24 hours, so the first user request after a
+    # long idle window always finds a fresh token.
+    try:
+        from src.services.google_oauth_maintenance import maintenance_loop as _oauth_sweep
+        from src.services.google_oauth_service import refresh_access_token as _google_refresh
+        from src.integrations import load_integrations as _load_integrations
+        _startup_tasks.append(asyncio.create_task(_oauth_sweep(
+            load_integrations=_load_integrations,
+            refresh=_google_refresh,
+        )))
+    except Exception as e:
+        logger.warning(f"drive-oauth maintenance loop not started: {e}")
+
     logger.info("Application startup complete")
 
 async def _shutdown_event():
