@@ -59,15 +59,27 @@ async def google_drive_oauth_status(integration_id: str):
 
 
 @router.post("/{integration_id}/refresh-token")
-async def google_drive_refresh_token(integration_id: str):
+async def google_drive_refresh_token(
+    integration_id: str,
+    force: bool = Query(default=False),
+):
     integration = get_integration(integration_id)
     if not integration:
         raise HTTPException(404, "Integration not found")
-    updated = await ensure_fresh_google_token(integration)
+
+    before = integration.get("oauth_expires_at")
+    updated = await ensure_fresh_google_token(
+        integration,
+        force_refresh=force,
+    )
+    after = updated.get("oauth_expires_at")
+
     return {
         "ok": True,
         "integration_id": integration_id,
-        "expires_at": updated.get("oauth_expires_at"),
+        "expires_at": after,
+        "refreshed": before != after,
+        "forced": force,
     }
 
 

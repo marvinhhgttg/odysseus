@@ -14,19 +14,22 @@ class GoogleDriveClient:
     def from_integration(cls, integration: Any) -> "GoogleDriveClient":
         if isinstance(integration, dict):
             base_url = integration.get("base_url") or "https://www.googleapis.com"
+            settings = integration.get("settings") or {}
+            if not isinstance(settings, dict):
+                settings = {}
+
             access_token = (
-                integration.get("access_token")
+                integration.get("oauth_access_token")
+                or settings.get("access_token")
+                or integration.get("access_token")
                 or integration.get("token")
-                or integration.get("oauth_access_token")
+                or integration.get("api_key")
             )
             api_key = (
                 integration.get("api_key")
+                or settings.get("api_key")
                 or integration.get("google_api_key")
             )
-            settings = integration.get("settings") or {}
-            if not access_token and isinstance(settings, dict):
-                access_token = settings.get("access_token") or access_token
-                api_key = settings.get("api_key") or api_key
         else:
             base_url = getattr(integration, "base_url", "https://www.googleapis.com")
             access_token = getattr(integration, "access_token", None)

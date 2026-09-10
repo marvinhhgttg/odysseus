@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.services.google_drive_organizer_service import GoogleDriveOrganizerService
+
 
 class DriveMutationExecutor:
+    def __init__(self) -> None:
+        self.service = GoogleDriveOrganizerService()
+
     async def create_approval_request(
         self,
         *,
@@ -12,12 +17,12 @@ class DriveMutationExecutor:
         selection_mode: str,
         action_ids: list[str],
     ) -> dict[str, Any]:
-        return {
-            "approval_id": "apr_demo_001",
-            "status": "pending",
-            "expires_at": "2026-08-24T22:30:00Z",
-            "fingerprint": "sha256:demo",
-        }
+        return self.service.create_approval_request(
+            owner_id=owner_id,
+            plan_id=plan_id,
+            selection_mode=selection_mode,
+            action_ids=action_ids,
+        )
 
     async def apply_plan(
         self,
@@ -27,11 +32,9 @@ class DriveMutationExecutor:
         approval_id: str,
         expected_fingerprint: str,
     ) -> dict[str, Any]:
-        return {
-            "plan_id": plan_id,
-            "status": "partially_applied",
-            "applied": 3,
-            "failed": 0,
-            "skipped": 0,
-            "results": {},
-        }
+        return self.service.apply_plan(
+            owner_id=owner_id,
+            plan_id=plan_id,
+            approval_id=approval_id,
+            expected_fingerprint=expected_fingerprint,
+        )

@@ -251,7 +251,19 @@ async def refresh_access_token(integration: Dict[str, Any]) -> Dict[str, Any]:
     return updated
 
 
-async def ensure_fresh_google_token(integration: Dict[str, Any]) -> Dict[str, Any]:
+async def ensure_fresh_google_token(
+    integration: Dict[str, Any],
+    *,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """Return a usable Google integration and refresh when required.
+
+    With force_refresh=True, always exchange the stored refresh token for a
+    fresh access token. This is useful for diagnostics and explicit UI actions.
+    """
+    if force_refresh:
+        return await refresh_access_token(integration)
+
     expires_at = integration.get("oauth_expires_at")
     if not expires_at:
         token = integration.get("oauth_access_token") or integration.get("settings", {}).get("access_token")

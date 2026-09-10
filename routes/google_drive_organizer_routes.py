@@ -38,7 +38,7 @@ def setup_google_drive_organizer_routes(drive_organizer_service) -> APIRouter:
         owner_id = _owner_id_from_request(request)
         if not owner_id:
             raise HTTPException(status_code=401, detail="Authentication required")
-        return drive_organizer_service.start_scan(
+        return await drive_organizer_service.start_scan(
             owner_id=owner_id,
             integration_id=payload.integration_id,
             policy_id=payload.policy_id,

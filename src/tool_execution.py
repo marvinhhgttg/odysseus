@@ -1,3 +1,4 @@
+from src.tools.google_drive import do_manage_google_drive
 """
 tool_execution.py
 
@@ -870,6 +871,9 @@ async def _execute_tool_block_impl(
     elif tool == "manage_skills":
         desc = "manage_skills"
         result = await do_manage_skills(content, owner=owner)
+    elif tool == "manage_google_drive":
+        desc = "manage_google_drive"
+        result = await do_manage_google_drive(content, owner=owner)
     elif tool == "api_call":
         first_line = content.split("\n")[0].strip()[:60]
         desc = f"api_call: {first_line}"

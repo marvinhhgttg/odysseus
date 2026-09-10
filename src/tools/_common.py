@@ -21,5 +21,8 @@ def _internal_headers(owner: Optional[str] = None) -> Dict[str, str]:
     from core.middleware import INTERNAL_TOOL_HEADER, INTERNAL_TOOL_TOKEN
     headers = {INTERNAL_TOOL_HEADER: INTERNAL_TOOL_TOKEN}
     if owner:
-        headers["X-Odysseus-Owner"] = owner
+        if isinstance(owner, dict):
+            owner = owner.get("owner_id") or owner.get("user_id") or owner.get("id") or ""
+        if owner:
+            headers["X-Odysseus-Owner"] = str(owner)
     return headers

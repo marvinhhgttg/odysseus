@@ -31,6 +31,72 @@ _REQUIRED_NATIVE_TOOL_ARGS = {
 # OpenAI-compatible function tool schemas
 # ---------------------------------------------------------------------------
 FUNCTION_TOOL_SCHEMAS = [
+
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_google_drive",
+            "description": "Read-only / plan-only Google Drive organizer tool. Use this to scan Google Drive, create an organization plan, inspect a plan, and list proposed actions. Never use it to apply changes; it does not support approval or apply operations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["scan", "plan", "get_plan", "list_actions"],
+                        "description": "Which safe Google Drive organizer action to perform"
+                    },
+                    "integration_id": {
+                        "type": "string",
+                        "description": "Required for scan; the Google Drive integration id"
+                    },
+                    "scan_run_id": {
+                        "type": "string",
+                        "description": "Required for plan; the scan run id to build a plan from"
+                    },
+                    "plan_id": {
+                        "type": "string",
+                        "description": "Required for get_plan and list_actions"
+                    },
+                    "scope": {
+                        "type": "object",
+                        "description": "Optional scan scope",
+                        "properties": {
+                            "mode": {
+                                "type": "string",
+                                "enum": ["my_drive", "folder"],
+                                "description": "Scan the whole drive or one folder"
+                            },
+                            "folder_id": {
+                                "type": "string",
+                                "description": "Required when mode is folder"
+                            },
+                            "max_files": {
+                                "type": "integer",
+                                "description": "How many files to scan in this page, 1-100"
+                            },
+                            "page_token": {
+                                "type": "string",
+                                "description": "Optional continuation token for the next page"
+                            }
+                        }
+                    },
+                    "policy_id": {
+                        "type": "string",
+                        "description": "Optional planning policy id"
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "Optional extra planning instructions"
+                    },
+                    "strategy": {
+                        "type": "string",
+                        "description": "Optional planning strategy hint"
+                    }
+                },
+                "required": ["action"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {

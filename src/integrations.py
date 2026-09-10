@@ -259,6 +259,58 @@ def _has_plaintext_api_key(integrations: List[Dict[str, Any]]) -> bool:
     return False
 
 
+
+def _integration_bearer_token(integration: Dict[str, Any]) -> str:
+    """
+    Resolve bearer token for integrations with OAuth-aware fallbacks.
+
+    Priority:
+    1. oauth_access_token
+    2. settings.access_token
+    3. access_token (legacy)
+    4. token (legacy)
+    5. api_key
+    """
+    if not isinstance(integration, dict):
+        return ""
+    settings = integration.get("settings") or {}
+    if not isinstance(settings, dict):
+        settings = {}
+    candidates = [
+        integration.get("oauth_access_token"),
+        settings.get("access_token"),
+        integration.get("access_token"),
+        integration.get("token"),
+        integration.get("api_key"),
+    ]
+    for value in candidates:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "none":
+            return text
+    return ""
+
+
+def _integration_auth_header_value(integration: Dict[str, Any]) -> str:
+    auth_type = str(integration.get("auth_type") or "").strip().lower()
+    preset = str(integration.get("preset") or "").strip().lower()
+    provider = str(integration.get("provider") or "").strip().lower()
+    api_key = str(integration.get("api_key") or "").strip()
+
+    if auth_type == "bearer":
+        token = _integration_bearer_token(integration)
+        return f"Bearer {token}" if token else ""
+
+    if auth_type == "basic" and api_key:
+        return api_key
+
+    if provider == "google_drive" or preset == "google_drive":
+        token = _integration_bearer_token(integration)
+        return f"Bearer {token}" if token else ""
+
+    return ""
+
 def mask_integration_secret(integration: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy safe for API responses."""
     safe = dict(integration)
@@ -528,7 +580,9 @@ async def execute_api_call(
             header_name = header_defaults.get(preset, "Authorization")
         headers[header_name] = api_key
     elif auth_type == "bearer" and api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        token = _integration_bearer_token(integration)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
     elif auth_type == "query" and api_key:
         if params is None:
             params = {}

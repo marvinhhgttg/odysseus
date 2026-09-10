@@ -207,7 +207,7 @@ class GoogleDriveOrganizerService:
 
         return integration
 
-    def start_scan(
+    async def start_scan(
         self,
         owner_id: str,
         integration_id: str,
@@ -215,6 +215,8 @@ class GoogleDriveOrganizerService:
         scope: Dict[str, Any],
     ) -> Dict[str, Any]:
         integration = self._require_google_drive_integration(owner_id, integration_id)
+        refreshed = await ensure_fresh_google_token(integration, force_refresh=False)
+        integration = refreshed or integration
         client = GoogleDriveClient.from_integration(integration)
 
         now = utcnow_naive()
@@ -223,12 +225,14 @@ class GoogleDriveOrganizerService:
             q = None
             mode = (scope or {}).get("mode")
             folder_id = (scope or {}).get("folder_id")
+            page_token = (scope or {}).get("page_token")
+            max_files = int((scope or {}).get("max_files") or 100)
             if mode == "folder" and folder_id:
                 q = f"'{folder_id}' in parents and trashed = false"
             else:
                 q = "trashed = false"
 
-            data = client.list_files(page_size=100, q=q)
+            data = client.list_files(page_size=max_files, page_token=page_token, q=q)
             files = data.get("files", []) or []
 
             run = GoogleDriveOrganizerScanRun(

@@ -93,6 +93,14 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "manage_tasks": "Scheduled task management: list, create, edit, delete, pause, resume, or run cron tasks.",
     "manage_endpoints": "Endpoint management: list, add, delete, enable, or disable model API endpoints.",
     "manage_mcp": "MCP server management: list, add, delete, reconnect servers, or list available tools.",
+    "manage_google_drive": (
+        "Google Drive organizer for read-only inventory and planning. "
+        "Use for Google Drive, Dateien, Ordner, Dokumente, Ablage, "
+        "Kategorisierung und Organisation: scan files, create an "
+        "organization plan, inspect a plan, and list proposed actions. "
+        "This agent tool is strictly read-only / plan-only: it cannot "
+        "approve, apply, move, rename, or delete files."
+    ),
     "manage_webhooks": "Webhook management: list, add, delete, enable, or disable webhooks.",
     "api_call": "Call a configured API integration by name (Home Assistant, Miniflux, Gitea, Linkding, Jellyfin, RSS reader, git forge, bookmark manager, smart home, or any other registered service). Make a GET/POST/PUT/PATCH/DELETE request to the integration's endpoint path, with an optional JSON body. Use whenever the user asks to query or control one of their connected integrations/services.",
     "manage_tokens": "API token management: list, create, or delete API access tokens.",
