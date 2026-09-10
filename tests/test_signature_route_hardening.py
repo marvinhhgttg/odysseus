@@ -91,6 +91,7 @@ def test_create_signature_stores_normalized_png_and_drops_svg(monkeypatch):
             height=80,
             svg='<svg onload="alert(1)"></svg>',
         ),
+        user="alice",
     ))
 
     assert db.added.owner == "alice"

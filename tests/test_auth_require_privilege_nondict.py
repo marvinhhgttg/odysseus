@@ -2,7 +2,7 @@ import types
 
 import pytest
 
-from src import auth_helpers
+from src import auth_dependencies
 from src.auth_helpers import require_privilege
 
 
@@ -24,13 +24,15 @@ def test_require_privilege_tolerates_non_dict_privileges(monkeypatch):
     # list). The privs.get(...) call sits outside the try, so the old code
     # raised AttributeError and turned a privilege check into a 500. It should
     # fall back to the documented fail-open behaviour.
-    monkeypatch.setattr(auth_helpers, "require_user", lambda request: "bob")
+    monkeypatch.setattr(auth_dependencies, "require_user", lambda request: "bob")
     req = _request(_Mgr(["do_x"]))
-    assert require_privilege(req, "do_x") == "bob"
+    dep = require_privilege("do_x")
+    assert dep(req) == "bob"
 
 
 def test_require_privilege_still_blocks_disallowed(monkeypatch):
-    monkeypatch.setattr(auth_helpers, "require_user", lambda request: "bob")
+    monkeypatch.setattr(auth_dependencies, "require_user", lambda request: "bob")
     req = _request(_Mgr({"do_x": False}))
+    dep = require_privilege("do_x")
     with pytest.raises(Exception):
-        require_privilege(req, "do_x")
+        dep(req)

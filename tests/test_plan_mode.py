@@ -23,7 +23,13 @@ from src.tool_security import (
 def test_allowlist_has_no_obvious_mutating_tools():
     # Sanity: the read-only allowlist must not contain mutating/external tools.
     mutating_markers = ("write_", "send_", "manage_", "create_", "edit_", "delete_")
+    # manage_google_drive is deliberately read-only despite its legacy name:
+    # it only scans/inspects Drive and refuses to approve or apply a plan
+    # (mutations happen in the dedicated organizer approval UI).
+    read_only_despite_manage_prefix = {"manage_google_drive"}
     for name in PLAN_MODE_READONLY_TOOLS:
+        if name in read_only_despite_manage_prefix:
+            continue
         assert not name.startswith(mutating_markers), f"{name} should not be read-only"
 
 

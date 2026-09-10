@@ -1,13 +1,21 @@
 """Shared device-flow route helper regressions."""
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from routes import device_flow
 
 
-def _client(monkeypatch, now_ref, start_flow, poll_flow):
+def _allow_admin(request: Request) -> None:
+    return None
+
+
+def _deny_admin(request: Request) -> None:
+    raise HTTPException(403, "admin required")
+
+
+def _client(monkeypatch, now_ref, start_flow, poll_flow, admin_gate=None):
     store = device_flow.PendingDeviceFlowStore(time_func=lambda: now_ref[0])
     router = device_flow.create_device_flow_router(
         prefix="/api/test-device",
@@ -18,7 +26,12 @@ def _client(monkeypatch, now_ref, start_flow, poll_flow):
     )
     app = FastAPI()
     app.include_router(router)
-    monkeypatch.setattr(device_flow, "require_admin", lambda request: None)
+    # The routes gate on Depends(require_admin), which FastAPI resolves from the
+    # function object captured at import time — a module-attr monkeypatch of
+    # device_flow.require_admin has no effect. Override the dependency instead.
+    app.dependency_overrides[device_flow.require_admin] = (
+        admin_gate or _allow_admin
+    )
     return TestClient(app)
 
 
@@ -127,12 +140,7 @@ def test_routes_are_admin_gated(monkeypatch):
     def poll(_request, _pending):
         return device_flow.DeviceFlowPoll.pending()
 
-    client = _client(monkeypatch, now, _start, poll)
-
-    def deny(_request):
-        raise HTTPException(403, "admin required")
-
-    monkeypatch.setattr(device_flow, "require_admin", deny)
+    client = _client(monkeypatch, now, _start, poll, admin_gate=_deny_admin)
     assert client.post("/api/test-device/device/start").status_code == 403
     assert client.post("/api/test-device/device/poll", data={"poll_id": "missing"}).status_code == 403
     assert client.post("/api/test-device/device/cancel", data={"poll_id": "missing"}).status_code == 403

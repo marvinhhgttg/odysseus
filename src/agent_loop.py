@@ -1359,7 +1359,7 @@ _ADMIN_VERBS = [
     "manage", "delete", "remove", "add", "create", "edit", "update",
     "configure", "set up", "setup", "enable", "disable", "disconnect",
     "connect", "install", "uninstall", "reset", "rename", "schedule",
-    "list my", "show my settings", "verwalte", "lösche", "einrichten",
+    "list", "show", "list my", "show my settings", "verwalte", "lösche", "einrichten",
     "konfigurier", "aktivier", "deaktivier", "hinzufügen", "entfernen",
 ]
 

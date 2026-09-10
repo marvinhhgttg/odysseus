@@ -106,7 +106,7 @@ async def test_multifile_after_a_recent_upload_is_not_rejected():
     up.setup_upload_routes(h)
     endpoint = _endpoint(up.router)
 
-    result = await endpoint(_request(), _files(3))
+    result = await endpoint(_request(), _files(3), owner=None)
 
     assert [f["name"] for f in result["files"]] == ["f0.txt", "f1.txt", "f2.txt"]
 
@@ -116,7 +116,7 @@ async def test_fresh_multifile_upload_succeeds():
     up.setup_upload_routes(h)
     endpoint = _endpoint(up.router)
 
-    result = await endpoint(_request(), _files(5))
+    result = await endpoint(_request(), _files(5), owner=None)
 
     assert len(result["files"]) == 5
 
@@ -131,7 +131,7 @@ async def test_genuine_recent_volume_still_throttled():
     endpoint = _endpoint(up.router)
 
     with pytest.raises(HTTPException) as ei:
-        await endpoint(_request(), _files(1))
+        await endpoint(_request(), _files(1), owner=None)
     assert ei.value.status_code == 429
 
 
@@ -191,7 +191,7 @@ async def test_chat_image_upload_is_added_to_gallery(tmp_path, monkeypatch):
     up.setup_upload_routes(h)
     endpoint = _endpoint(up.router)
 
-    result = await endpoint(_request(user="alice"), [_image_upload()])
+    result = await endpoint(_request(user="alice"), [_image_upload()], owner="alice")
     uploaded = result["files"][0]
 
     assert uploaded["gallery_id"]
@@ -225,7 +225,7 @@ async def test_non_image_chat_upload_is_not_added_to_gallery(tmp_path, monkeypat
     result = await endpoint(_request(user="alice"), [types.SimpleNamespace(
         filename="notes.txt",
         file=io.BytesIO(b"plain text upload"),
-    )])
+    )], owner="alice")
 
     assert "gallery_id" not in result["files"][0]
     db = TestingSession()

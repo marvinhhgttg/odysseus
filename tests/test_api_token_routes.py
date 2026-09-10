@@ -110,20 +110,26 @@ def test_api_token_routes_require_admin_for_list_create_delete(monkeypatch, toke
     monkeypatch.setenv("AUTH_ENABLED", "true")
     mod = token_routes_mod
 
-    list_tokens = _get_handler(mod, "GET", "/tokens")
-    create_token = _get_handler(mod, "POST", "/tokens")
-    delete_token = _get_handler(mod, "DELETE", "/tokens/{token_id}")
+    # The admin gate moved into DI (Depends(require_admin)) — it runs at
+    # request time, not in the handler body. Drive it through a real request
+    # carrying a non-admin caller.
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
 
-    non_admin = _req("bob", is_admin=False)
+    app = FastAPI()
+    app.state.auth_manager = _admin_mgr(is_admin=False)
 
-    for handler, kwargs in [
-        (list_tokens, {"request": non_admin}),
-        (create_token, {"request": non_admin, "name": "my-token"}),
-        (delete_token, {"request": non_admin, "token_id": "abc12345"}),
-    ]:
-        with pytest.raises(HTTPException) as exc:
-            handler(**kwargs)
-        assert exc.value.status_code == 403
+    @app.middleware("http")
+    async def _stamp_user(request: Request, call_next):
+        request.state.current_user = "bob"
+        return await call_next(request)
+
+    app.include_router(mod.setup_api_token_routes())
+    client = TestClient(app)
+
+    assert client.get("/api/tokens").status_code == 403
+    assert client.post("/api/tokens", data={"name": "my-token"}).status_code == 403
+    assert client.delete("/api/tokens/abc12345").status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +170,11 @@ def test_create_token_attributes_owner_hashes_secret_and_returns_raw_once(monkey
     fake_session = MagicMock()
     monkeypatch.setattr(mod, "ApiToken", _FakeApiToken)
     monkeypatch.setattr(mod, "get_db_session", lambda: _db_ctx(fake_session))
-    monkeypatch.setattr(mod, "get_current_user", lambda req: req.state.current_user)
 
     invalidator = MagicMock()
     req = _req("alice", is_admin=True, invalidator=invalidator)
     create_token = _get_handler(mod, "POST", "/tokens")
-    resp = create_token(request=req, name="my-token")
+    resp = create_token(request=req, name="my-token", owner="alice")
 
     expected_raw = "ody_" + fake_suffix
     expected_prefix = expected_raw[:8]
@@ -198,11 +203,10 @@ def test_create_token_accepts_cookbook_read_scope(monkeypatch, token_routes_mod)
 
     fake_session = MagicMock()
     monkeypatch.setattr(mod, "get_db_session", lambda: _db_ctx(fake_session))
-    monkeypatch.setattr(mod, "get_current_user", lambda req: req.state.current_user)
 
     req = _req("alice", is_admin=True)
     create_token = _get_handler(mod, "POST", "/tokens")
-    resp = create_token(request=req, name="cookbook-reader", scopes="cookbook:read")
+    resp = create_token(request=req, name="cookbook-reader", scopes="cookbook:read", owner="alice")
 
     assert resp["scopes"] == ["cookbook:read"]
 
@@ -213,11 +217,10 @@ def test_cookbook_launch_scope_implies_read(monkeypatch, token_routes_mod):
 
     fake_session = MagicMock()
     monkeypatch.setattr(mod, "get_db_session", lambda: _db_ctx(fake_session))
-    monkeypatch.setattr(mod, "get_current_user", lambda req: req.state.current_user)
 
     req = _req("alice", is_admin=True)
     create_token = _get_handler(mod, "POST", "/tokens")
-    resp = create_token(request=req, name="cookbook-launcher", scopes="cookbook:launch")
+    resp = create_token(request=req, name="cookbook-launcher", scopes="cookbook:launch", owner="alice")
 
     assert resp["scopes"] == ["cookbook:read", "cookbook:launch"]
 
@@ -295,7 +298,7 @@ def test_delete_token_deletes_and_invalidates_cache(monkeypatch, token_routes_mo
     invalidator = MagicMock()
     req = _req("alice", is_admin=True, invalidator=invalidator)
     delete_token = _get_handler(mod, "DELETE", "/tokens/{token_id}")
-    resp = delete_token(request=req, token_id="abcd1234")
+    resp = delete_token(request=req, token_id="abcd1234", current_user="alice")
 
     assert resp == {"status": "deleted"}
     fake_session.delete.assert_called_once_with(fake_token)
@@ -364,7 +367,7 @@ def test_update_token_rename_preserves_scopes(monkeypatch, token_routes_mod):
     invalidator = MagicMock()
     req = _patch_request(invalidator, {"name": "renamed"})
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
-    resp = asyncio.run(update_token(request=req, token_id="tok123"))
+    resp = asyncio.run(update_token(request=req, token_id="tok123", current_user="alice"))
 
     assert token.scopes == "email:read,email:draft"  # untouched
     assert resp["scopes"] == ["email:read", "email:draft"]
@@ -387,7 +390,7 @@ def test_update_token_applies_explicit_scopes(monkeypatch, token_routes_mod):
 
     req = _patch_request(MagicMock(), {"scopes": ["chat"]})
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
-    resp = asyncio.run(update_token(request=req, token_id="tok123"))
+    resp = asyncio.run(update_token(request=req, token_id="tok123", current_user="alice"))
 
     assert token.scopes == "chat"
     assert resp["scopes"] == ["chat"]
@@ -440,7 +443,7 @@ def test_update_token_rejects_non_owner(monkeypatch, token_routes_mod):
     req = _bob_patch_request(MagicMock(), {"name": "hijacked"})
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(update_token(request=req, token_id="tok123"))
+        asyncio.run(update_token(request=req, token_id="tok123", current_user="bob"))
     assert exc.value.status_code == 403
     assert token.name == "alice-token"
 
@@ -460,7 +463,7 @@ def test_delete_token_rejects_non_owner(monkeypatch, token_routes_mod):
     req = _req("bob", is_admin=True, invalidator=invalidator)
     delete_token = _get_handler(mod, "DELETE", "/tokens/{token_id}")
     with pytest.raises(HTTPException) as exc:
-        delete_token(request=req, token_id="tok123")
+        delete_token(request=req, token_id="tok123", current_user="bob")
     assert exc.value.status_code == 403
     fake_session.delete.assert_not_called()
     invalidator.assert_not_called()
@@ -469,7 +472,6 @@ def test_delete_token_rejects_non_owner(monkeypatch, token_routes_mod):
 def test_update_token_owner_check_skipped_when_auth_disabled(monkeypatch, token_routes_mod):
     monkeypatch.setenv("AUTH_ENABLED", "false")
     mod = token_routes_mod
-    monkeypatch.setattr(mod, "get_current_user", lambda req: None)
 
     token = SimpleNamespace(
         id="tok123", name="original", owner="alice",
@@ -481,14 +483,13 @@ def test_update_token_owner_check_skipped_when_auth_disabled(monkeypatch, token_
 
     req = _bob_patch_request(MagicMock(), {"name": "renamed-in-single-user"})
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
-    resp = asyncio.run(update_token(request=req, token_id="tok123"))
+    resp = asyncio.run(update_token(request=req, token_id="tok123", current_user=""))
     assert resp["name"] == "renamed-in-single-user"
 
 
 def test_delete_token_owner_check_skipped_when_auth_disabled(monkeypatch, token_routes_mod):
     monkeypatch.setenv("AUTH_ENABLED", "false")
     mod = token_routes_mod
-    monkeypatch.setattr(mod, "get_current_user", lambda req: None)
     monkeypatch.setattr(mod, "ApiToken", MagicMock())
 
     fake_token = SimpleNamespace(id="tok123", owner="alice", name="alice-token")
@@ -499,7 +500,7 @@ def test_delete_token_owner_check_skipped_when_auth_disabled(monkeypatch, token_
     invalidator = MagicMock()
     req = _req("", is_admin=True, invalidator=invalidator)
     delete_token = _get_handler(mod, "DELETE", "/tokens/{token_id}")
-    resp = delete_token(request=req, token_id="tok123")
+    resp = delete_token(request=req, token_id="tok123", current_user="")
     assert resp == {"status": "deleted"}
     fake_session.delete.assert_called_once_with(fake_token)
 
@@ -525,7 +526,7 @@ def test_update_token_with_array_body_does_not_500(monkeypatch, token_routes_mod
     invalidator = MagicMock()
     req = _patch_request(invalidator, [])
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
-    resp = asyncio.run(update_token(request=req, token_id="tok123"))
+    resp = asyncio.run(update_token(request=req, token_id="tok123", current_user="alice"))
 
     # Name and scopes must be unchanged — payload was normalised to {}
     assert token.name == "original"
@@ -549,7 +550,7 @@ def test_update_token_with_null_body_does_not_500(monkeypatch, token_routes_mod)
     invalidator = MagicMock()
     req = _patch_request(invalidator, None)
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
-    resp = asyncio.run(update_token(request=req, token_id="tok123"))
+    resp = asyncio.run(update_token(request=req, token_id="tok123", current_user="alice"))
 
     assert token.name == "original"
     assert token.scopes == "chat"
@@ -571,7 +572,7 @@ def test_update_token_normal_object_still_works(monkeypatch, token_routes_mod):
     invalidator = MagicMock()
     req = _patch_request(invalidator, {"name": "updated"})
     update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
-    resp = asyncio.run(update_token(request=req, token_id="tok123"))
+    resp = asyncio.run(update_token(request=req, token_id="tok123", current_user="alice"))
 
     assert token.name == "updated"
     assert resp["name"] == "updated"

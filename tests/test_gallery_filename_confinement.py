@@ -2,19 +2,23 @@ import os
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from core.database import Base, GalleryImage
+from src.auth_dependencies import require_user
 
 
 def _gallery_module():
     import routes.gallery_routes as gallery_routes
     return gallery_routes
+
+
+def _as_alice(request: Request) -> str:
+    return "alice"
 
 
 def test_gallery_image_path_allows_safe_filename(tmp_path, monkeypatch):
@@ -112,9 +116,11 @@ def test_gallery_replace_rejects_symlink_escape(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gallery_routes, "GALLERY_IMAGE_DIR", image_dir)
     monkeypatch.setattr(gallery_routes, "SessionLocal", SessionLocal)
-    monkeypatch.setattr(gallery_routes, "get_current_user", lambda request: "alice")
 
     app = FastAPI()
+    # Depends(require_user) resolves from the import-time function object, so a
+    # module-attr get_current_user patch is dead here. Override the DI dep.
+    app.dependency_overrides[require_user] = _as_alice
     app.include_router(gallery_routes.setup_gallery_routes())
     client = TestClient(app)
 

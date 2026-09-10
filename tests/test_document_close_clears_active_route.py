@@ -76,7 +76,7 @@ async def test_patch_unlink_clears_active_document():
     patch_document = _endpoint("PATCH", "/api/document/{doc_id}")
     doc_id = _make_doc()
     set_active_document(doc_id)
-    await patch_document(_req(), doc_id, DocumentPatch(session_id=""))
+    await patch_document(_req(), doc_id, DocumentPatch(session_id=""), user="tester")
     assert get_active_document() is None
 
 
@@ -84,7 +84,7 @@ async def test_delete_clears_active_document():
     delete_document = _endpoint("DELETE", "/api/document/{doc_id}")
     doc_id = _make_doc()
     set_active_document(doc_id)
-    await delete_document(_req(), doc_id)
+    await delete_document(_req(), doc_id, user="tester")
     assert get_active_document() is None
 
 
@@ -93,5 +93,5 @@ async def test_unlinking_a_different_doc_leaves_pointer():
     active_id = _make_doc()
     other_id = _make_doc()
     set_active_document(active_id)
-    await patch_document(_req(), other_id, DocumentPatch(session_id=""))
+    await patch_document(_req(), other_id, DocumentPatch(session_id=""), user="tester")
     assert get_active_document() == active_id

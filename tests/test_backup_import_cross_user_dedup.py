@@ -21,10 +21,7 @@ class _Req:
         return self._body
 
 
-def _setup(monkeypatch, store, user="alice"):
-    monkeypatch.setattr(br, "require_admin", lambda request: None)
-    monkeypatch.setattr(br, "get_current_user", lambda request: user)
-
+def _setup(monkeypatch, store):
     mem = MagicMock()
     mem.load_all.return_value = list(store)
     saved = {}
@@ -45,7 +42,7 @@ def test_user_can_import_memory_matching_another_users_text(monkeypatch):
     # bob already has "buy milk"; alice imports her own "Buy Milk".
     endpoint, saved = _setup(monkeypatch, [{"text": "buy milk", "owner": "bob"}])
     body = {"memories": [{"text": "Buy Milk"}]}
-    asyncio.run(endpoint(_Req(body)))
+    asyncio.run(endpoint(_Req(body), _admin=None, user="alice"))
     texts_by_owner = {(e.get("owner"), e.get("text")) for e in saved["entries"]}
     assert ("alice", "Buy Milk") in texts_by_owner  # not dropped as a "duplicate"
     assert ("bob", "buy milk") in texts_by_owner     # other tenant preserved
@@ -54,7 +51,7 @@ def test_user_can_import_memory_matching_another_users_text(monkeypatch):
 def test_users_own_duplicate_is_still_skipped(monkeypatch):
     endpoint, saved = _setup(monkeypatch, [{"text": "buy milk", "owner": "alice"}])
     body = {"memories": [{"text": "Buy Milk"}]}
-    asyncio.run(endpoint(_Req(body)))
+    asyncio.run(endpoint(_Req(body), _admin=None, user="alice"))
     alice_milk = [e for e in saved["entries"]
                   if e.get("owner") == "alice" and e.get("text", "").lower() == "buy milk"]
     assert len(alice_milk) == 1  # the real duplicate is still deduped

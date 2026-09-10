@@ -23,6 +23,14 @@ import sys
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from src.auth_dependencies import require_user
+
+
+def _as_alice(request: Request) -> str:
+    return "alice"
 
 
 # ---------------------------------------------------------------------------
@@ -141,9 +149,6 @@ def test_apply_owner_filter_none_bypasses_filter_for_single_user_mode(cleanup_im
 
 def test_preview_route_passes_caller_identity_as_owner(monkeypatch, cleanup_imports):
     """GET /api/cleanup/preview must call get_cleanup_preview(owner=<caller>)."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     _, setup_cleanup_routes = cleanup_imports
 
     mock_preview = AsyncMock(return_value={
@@ -153,9 +158,12 @@ def test_preview_route_passes_caller_identity_as_owner(monkeypatch, cleanup_impo
         "estimated_space_freed_mb": 0.0,
     })
     monkeypatch.setattr("routes.cleanup_routes.get_cleanup_preview", mock_preview)
-    monkeypatch.setattr("routes.cleanup_routes.get_current_user", lambda _req: "alice")
 
     app = FastAPI()
+    # Routes gate on Depends(require_user) — resolved from the import-time
+    # function object, so monkeypatching cleanup_routes.get_current_user has no
+    # effect. Override the DI dependency instead.
+    app.dependency_overrides[require_user] = _as_alice
     app.include_router(setup_cleanup_routes(MagicMock()))
     client = TestClient(app)
 
@@ -167,17 +175,14 @@ def test_preview_route_passes_caller_identity_as_owner(monkeypatch, cleanup_impo
 
 def test_cleanup_route_passes_caller_identity_as_owner(monkeypatch, cleanup_imports):
     """POST /api/cleanup must call cleanup_sessions(session_manager, owner=<caller>)."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     _, setup_cleanup_routes = cleanup_imports
 
     mock_cleanup = AsyncMock(return_value=(3, 2, 1.5))
     monkeypatch.setattr("routes.cleanup_routes.cleanup_sessions", mock_cleanup)
-    monkeypatch.setattr("routes.cleanup_routes.get_current_user", lambda _req: "alice")
 
     sm = MagicMock()
     app = FastAPI()
+    app.dependency_overrides[require_user] = _as_alice
     app.include_router(setup_cleanup_routes(sm))
     client = TestClient(app)
 

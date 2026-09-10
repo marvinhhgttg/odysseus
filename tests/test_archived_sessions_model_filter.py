@@ -63,7 +63,6 @@ def archived_endpoint(monkeypatch):
 
     _stub_multipart_if_missing(monkeypatch)
     monkeypatch.setattr(sr, "SessionLocal", _TS)
-    monkeypatch.setattr(sr, "effective_user", lambda request: "alice")
     router = sr.setup_session_routes(MagicMock(), {})
     return _route(router, "/api/sessions/archived")
 
@@ -82,18 +81,18 @@ def _seed(owner, *models):
 
 def test_contains_match_returns_all_models_sharing_the_substring(archived_endpoint):
     _seed("alice", "openai/gpt-4", "gpt-4o", "claude-3")
-    res = archived_endpoint(request=None, model="gpt-4")
+    res = archived_endpoint(request=None, user="alice", model="gpt-4")
     got = {s["model"] for s in res["sessions"]}
     assert got == {"openai/gpt-4", "gpt-4o"}
 
 
 def test_exact_full_model_still_matches(archived_endpoint):
     _seed("alice", "openai/gpt-4", "gpt-4o")
-    res = archived_endpoint(request=None, model="openai/gpt-4")
+    res = archived_endpoint(request=None, user="alice", model="openai/gpt-4")
     assert {s["model"] for s in res["sessions"]} == {"openai/gpt-4"}
 
 
 def test_wildcard_in_filter_is_escaped(archived_endpoint):
     _seed("alice", "gpt-4o", "gpt_4o")
-    res = archived_endpoint(request=None, model="gpt_4")
+    res = archived_endpoint(request=None, user="alice", model="gpt_4")
     assert {s["model"] for s in res["sessions"]} == {"gpt_4o"}

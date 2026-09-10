@@ -60,12 +60,14 @@ def _companion_pairing_stubs(monkeypatch):
         "core.auth": {"AuthManager": MagicMock()},
         "src.endpoint_resolver": {"build_chat_url": (lambda u: u)},
     }.items():
-        if _name not in sys.modules:
-            _mm = types.ModuleType(_name)
-            for _k, _v in _attrs.items():
-                setattr(_mm, _k, _v)
-            sys.modules[_name] = _mm
-        monkeypatch.setitem(sys.modules, _name, sys.modules[_name])
+        _mm = types.ModuleType(_name)
+        for _k, _v in _attrs.items():
+            setattr(_mm, _k, _v)
+        # setitem captures the pre-existing state and restores it on teardown:
+        # a key absent before is DELETED again (not left pointing at _mm), so a
+        # later test's `from src.endpoint_resolver import ...` imports the real
+        # module instead of hitting a symbol-less stub.
+        monkeypatch.setitem(sys.modules, _name, _mm)
 
 
 from fastapi import HTTPException  # noqa: E402

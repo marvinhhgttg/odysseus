@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from fastapi import Request
+
 from src.preset_manager import PresetManager
 
 
@@ -82,6 +84,8 @@ def _install_model_route_import_stubs(monkeypatch):
     db_mod.GalleryImage = MagicMock()
     middleware_mod = types.ModuleType("core.middleware")
     middleware_mod.require_admin = lambda request: None
+    log_safety_mod = types.ModuleType("core.log_safety")
+    log_safety_mod.redact_url = lambda url, *a, **k: url
     multipart_mod = types.ModuleType("python_multipart")
     multipart_mod.__version__ = "0.0.13"
     models_mod = types.ModuleType("core.models")
@@ -97,6 +101,7 @@ def _install_model_route_import_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core", core_mod)
     monkeypatch.setitem(sys.modules, "core.database", db_mod)
     monkeypatch.setitem(sys.modules, "core.middleware", middleware_mod)
+    monkeypatch.setitem(sys.modules, "core.log_safety", log_safety_mod)
     monkeypatch.setitem(sys.modules, "python_multipart", multipart_mod)
     monkeypatch.setitem(sys.modules, "core.models", models_mod)
     monkeypatch.setitem(sys.modules, "core.exceptions", exceptions_mod)
@@ -128,9 +133,20 @@ def _install_core_middleware_stub(monkeypatch):
     return middleware_mod
 
 
+def _allow_admin(request: Request) -> None:
+    return None
+
+
+def _deny_admin(request: Request) -> None:
+    raise PermissionError("admin required")
+
+
 def test_providers_requires_admin_before_discovery_and_cache(monkeypatch):
     _install_model_route_import_stubs(monkeypatch)
+    from fastapi import FastAPI, Request, HTTPException
+    from fastapi.testclient import TestClient
     import routes.model_routes as model_routes
+    from src.auth_dependencies import require_admin
 
     class _Discovery:
         def __init__(self):
@@ -142,25 +158,27 @@ def test_providers_requires_admin_before_discovery_and_cache(monkeypatch):
 
     discovery = _Discovery()
     router = model_routes.setup_model_routes(discovery)
-    endpoint = next(
-        route.endpoint
-        for route in router.routes
-        if getattr(route, "path", "") == "/api/providers"
-    )
-    request = SimpleNamespace()
 
-    assert endpoint(request, refresh=True) == {"providers": [{"host": "internal.example"}]}
+    app = FastAPI()
+    # The admin gate is DI (Depends(require_admin)) — resolved at request time
+    # from the import-time function object, so monkeypatching
+    # model_routes.require_admin is dead code. Override the dependency to prove
+    # the gate fires BEFORE discovery and the cached payload.
+    app.dependency_overrides[require_admin] = _allow_admin
+    app.include_router(router)
+    client = TestClient(app)
+
+    assert client.get("/api/providers", params={"refresh": "true"}).json() == {
+        "providers": [{"host": "internal.example"}],
+    }
     assert discovery.calls == 1
 
-    def deny_admin(_request):
-        raise PermissionError("admin required")
+    def deny(_request: Request) -> None:
+        raise HTTPException(403, "admin required")
 
-    monkeypatch.setattr(model_routes, "require_admin", deny_admin)
-
-    with pytest.raises(PermissionError):
-        endpoint(request, refresh=True)
-    with pytest.raises(PermissionError):
-        endpoint(request, refresh=False)
+    app.dependency_overrides[require_admin] = deny
+    assert client.get("/api/providers", params={"refresh": "true"}).status_code == 403
+    assert client.get("/api/providers", params={"refresh": "false"}).status_code == 403
     assert discovery.calls == 1
 
 

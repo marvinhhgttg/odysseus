@@ -12,12 +12,12 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 import routes.backup_routes as backup_routes
 from routes.backup_routes import setup_backup_routes
+from src.auth_dependencies import require_admin, require_user
 
-# require_admin / get_current_user are bound into routes.backup_routes at import
-# time (`from x import name`). We patch them on that module directly per-test
-# via monkeypatch — robust to import order and reverted at teardown. (Stubbing
-# them through sys.modules only works if backup_routes has not been imported
-# yet, which is not guaranteed in a full-suite run.)
+# require_admin / require_user are bound into the route handlers at import time
+# (`from x import name`) and FastAPI resolves them from the function object, so
+# monkeypatching backup_routes.<name> has no effect. Override the DI deps on the
+# app instead (see _make_client).
 
 
 class FakeMemoryManager:
@@ -66,17 +66,19 @@ class FakeSkillsManager:
         return {"name": name, "id": entry["id"]}
 
 
-def _make_client(skills_mgr, monkeypatch):
-    # Bypass the admin gate and read the importer straight off request.state.
-    monkeypatch.setattr(backup_routes, "require_admin", lambda *a, **k: None)
-    monkeypatch.setattr(backup_routes, "get_current_user",
-                        lambda req: getattr(req.state, "user", None))
-    app = FastAPI()
+def _as_alice(request: Request) -> str:
+    return "alice"
 
-    @app.middleware("http")
-    async def _set_user(request: Request, call_next):
-        request.state.user = "alice"
-        return await call_next(request)
+
+def _allow_admin(request: Request) -> None:
+    return None
+
+
+def _make_client(skills_mgr):
+    # Bypass the admin gate and attribute the import to Alice via DI overrides.
+    app = FastAPI()
+    app.dependency_overrides[require_admin] = _allow_admin
+    app.dependency_overrides[require_user] = _as_alice
 
     router = setup_backup_routes(FakeMemoryManager(), FakePresetManager(), skills_mgr)
     app.include_router(router)
@@ -88,7 +90,7 @@ def test_import_skill_not_dropped_by_other_users_title_collision(monkeypatch):
     skills_mgr = FakeSkillsManager([
         {"id": "bob-1", "title": "Deploy", "name": "Deploy", "owner": "bob"},
     ])
-    client = _make_client(skills_mgr, monkeypatch)
+    client = _make_client(skills_mgr)
 
     # Alice imports HER OWN backup containing a skill also titled "Deploy".
     payload = {

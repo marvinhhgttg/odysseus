@@ -186,12 +186,14 @@ def _build_research_router():
 
 
 def _fake_request(user=None):
-    """Cheap stand-in for fastapi.Request — only `request.state.current_user`
-    matters to `get_current_user`."""
+    """Cheap stand-in for fastapi.Request — models `request.state.current_user`,
+    `.client`, and `.app.state` so modern auth dependencies resolve."""
     req = SimpleNamespace()
     req.state = SimpleNamespace(current_user=user)
     # Some endpoints touch .client too — provide a benign default.
     req.client = SimpleNamespace(host="127.0.0.1")
+    # get_auth_manager reads request.app.state.auth_manager (None = single-user).
+    req.app = SimpleNamespace(state=SimpleNamespace(auth_manager=None))
     return req
 
 

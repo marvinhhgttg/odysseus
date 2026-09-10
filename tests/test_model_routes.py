@@ -1425,7 +1425,7 @@ def test_api_models_scopes_api_token_to_token_owner(monkeypatch):
         ),
     )
 
-    result = _route_endpoint(router, "/api/models")(request)
+    result = _route_endpoint(router, "/api/models")(request, owner="alice")
 
     assert [item["endpoint_name"] for item in result["items"]] == ["alice", "shared"]
     assert admin_checks == ["alice"]
@@ -1568,7 +1568,7 @@ def test_api_models_auth_gate_fails_closed_on_unexpected_error(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc:
-        _route_endpoint(router, "/api/models")(request)
+        _route_endpoint(router, "/api/models")(request, owner="")
 
     assert exc.value.status_code == 500
 

@@ -837,9 +837,9 @@ def test_mcp_config_listing_is_admin_gated():
     from routes import mcp_routes
 
     src = Path(mcp_routes.__file__).read_text()
-    assert "def list_servers(request: Request):" in src
-    assert "def list_tools(request: Request):" in src
-    assert "def list_server_tools(server_id: str, request: Request):" in src
+    assert "def list_servers(request: Request, _admin: None = Depends(require_admin)):" in src
+    assert "def list_tools(request: Request, _admin: None = Depends(require_admin)):" in src
+    assert "def list_server_tools(server_id: str, request: Request, _admin: None = Depends(require_admin)):" in src
 
 
 # ── web_fetch SSRF guard (PR #111 merge gate) ───────────────────────
@@ -975,8 +975,8 @@ def test_diagnostics_routes_are_admin_gated():
     src = Path(__file__).resolve().parents[1] / "routes" / "diagnostics_routes.py"
     text = src.read_text()
     for handler in ("get_database_stats", "get_rag_stats", "test_youtube", "test_research"):
-        assert f"def {handler}(request: Request" in text, handler
-    assert text.count("require_admin(request)") >= 4
+        assert f"def {handler}(" in text, handler
+    assert text.count("Depends(require_admin)") >= 4
 
 
 def test_email_thread_rendering_sanitizes_body_html():

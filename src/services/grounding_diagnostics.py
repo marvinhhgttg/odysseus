@@ -189,6 +189,31 @@ def explain_answer(answer: str, sources: List[Dict[str, Any]]) -> Dict[str, Any]
         if named is not None and named not in matched_sources:
             matched_sources.append(named)
 
+        # implicit-citation-match dry-run parity: mirror the real filter's
+        # third fallback path so /explain reports what the filter would
+        # actually decide, not what the strict pre-fix path would.
+        if not matched_sources:
+            candidate_matches = []
+            terms_probe = _concrete_grounding_terms(block)
+            for pos, source in enumerate(indexed_sources, 1):
+                src_ev = _source_grounding_text(source)
+                if not src_ev:
+                    continue
+                if terms_probe:
+                    if all(_grounding_term_supported(t, src_ev) for t in terms_probe):
+                        candidate_matches.append((pos, source))
+                else:
+                    try:
+                        from src.agent_loop import _has_evidence_overlap
+                        hits, total = _has_evidence_overlap(block, src_ev)
+                    except Exception:
+                        hits, total = 0, 0
+                    if total and hits * 2 >= total and hits >= 2:
+                        candidate_matches.append((pos, source))
+            if len(candidate_matches) == 1:
+                pos, implicit_source = candidate_matches[0]
+                matched_sources.append(implicit_source)
+
         if not matched_sources:
             block_reports.append({
                 "block": _clip(block, 500),

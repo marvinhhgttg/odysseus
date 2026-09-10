@@ -45,7 +45,6 @@ def test_file_kept_when_commit_fails(tmp_path, monkeypatch):
     # GALLERY_IMAGE_DIR is an absolute path fixed at import, so a chdir can't
     # redirect the delete; point the resolver at the seeded tmp dir directly.
     monkeypatch.setattr(gallery_routes, "GALLERY_IMAGE_DIR", tmp_path / "data" / "generated_images")
-    monkeypatch.setattr(gallery_routes, "get_current_user", lambda r: "alice")
 
     # A session whose commit always fails, to simulate a DB error mid-delete.
     sess = SessionLocal()
@@ -58,7 +57,7 @@ def test_file_kept_when_commit_fails(tmp_path, monkeypatch):
 
     delete = _delete_endpoint()
     with pytest.raises(HTTPException):
-        asyncio.run(delete(Request(scope={"type": "http"}), "img-1"))
+        asyncio.run(delete(Request(scope={"type": "http"}), "img-1", user="alice"))
 
     # File must survive a failed commit — the record is still active after rollback.
     assert (tmp_path / "data" / "generated_images" / "x.png").exists()
@@ -71,11 +70,10 @@ def test_file_kept_when_commit_fails(tmp_path, monkeypatch):
 def test_file_removed_on_successful_delete(tmp_path, monkeypatch):
     SessionLocal = _seed(tmp_path)
     monkeypatch.setattr(gallery_routes, "GALLERY_IMAGE_DIR", tmp_path / "data" / "generated_images")
-    monkeypatch.setattr(gallery_routes, "get_current_user", lambda r: "alice")
     monkeypatch.setattr(gallery_routes, "SessionLocal", SessionLocal)
 
     delete = _delete_endpoint()
-    result = asyncio.run(delete(Request(scope={"type": "http"}), "img-1"))
+    result = asyncio.run(delete(Request(scope={"type": "http"}), "img-1", user="alice"))
 
     assert result["status"] == "deleted"
     assert not (tmp_path / "data" / "generated_images" / "x.png").exists()

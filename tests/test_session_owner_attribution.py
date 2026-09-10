@@ -106,7 +106,7 @@ def test_bearer_owner_A_cannot_verify_owner_B_session(monkeypatch):
     monkeypatch.setattr(SR, "SessionLocal", _session_local_returning("bob"))
     req = _req(api_token=True, api_token_owner="alice", current_user="api")
     with pytest.raises(HTTPException) as exc:
-        SR._verify_session_owner(req, "sid-owned-by-bob")
+        SR._verify_session_owner(req, "sid-owned-by-bob", user="alice")
     assert exc.value.status_code == 404
 
 
@@ -114,28 +114,28 @@ def test_owner_can_verify_their_own_session(monkeypatch):
     monkeypatch.setattr(SR, "SessionLocal", _session_local_returning("alice"))
     req = _req(api_token=True, api_token_owner="alice", current_user="api")
     # Should not raise.
-    SR._verify_session_owner(req, "sid-owned-by-alice")
+    SR._verify_session_owner(req, "sid-owned-by-alice", user="alice")
 
 
 def test_cookie_user_owns_their_session(monkeypatch):
     # Cookie path unchanged: alice (cookie) verifies alice's session.
     monkeypatch.setattr(SR, "SessionLocal", _session_local_returning("alice"))
     req = _req(api_token=False, current_user="alice")
-    SR._verify_session_owner(req, "sid")
+    SR._verify_session_owner(req, "sid", user="alice")
 
 
 def test_missing_session_is_404(monkeypatch):
     monkeypatch.setattr(SR, "SessionLocal", _session_local_returning(_MISSING))
     req = _req(api_token=False, current_user="alice")
     with pytest.raises(HTTPException) as exc:
-        SR._verify_session_owner(req, "nope")
+        SR._verify_session_owner(req, "nope", user="alice")
     assert exc.value.status_code == 404
 
 
 def test_unauthenticated_caller_rejected(monkeypatch):
     req = _req(api_token=False, current_user=None)
     with pytest.raises(HTTPException) as exc:
-        SR._verify_session_owner(req, "sid")
+        SR._verify_session_owner(req, "sid", user=None)
     assert exc.value.status_code == 401
 
 
@@ -145,4 +145,4 @@ def test_auth_disabled_allows_owner_stamped_session(monkeypatch):
     req = _req(api_token=False, current_user=None)
 
     # Single-user/auth-disabled mode should verify existence but not compare owner.
-    SR._verify_session_owner(req, "sid-owned-by-admin")
+    SR._verify_session_owner(req, "sid-owned-by-admin", user=None)

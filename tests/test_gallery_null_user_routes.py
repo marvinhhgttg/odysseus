@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,7 +11,15 @@ from core.database import GalleryAlbum, GalleryImage
 import routes.gallery_routes as gallery_routes
 
 
-def _client_with_gallery(monkeypatch, tmp_path):
+def _no_user(request: Request) -> str:
+    return None
+
+
+def _as_alice(request: Request) -> str:
+    return "alice"
+
+
+def _client_with_gallery(monkeypatch, tmp_path, user_override=_no_user):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'gallery.db'}",
         connect_args={"check_same_thread": False},
@@ -58,6 +66,11 @@ def _client_with_gallery(monkeypatch, tmp_path):
         db.close()
 
     app = FastAPI()
+    # Routes gate on Depends(require_user), resolved from the import-time
+    # function object — monkeypatching gallery_routes.get_current_user has no
+    # effect. Override the DI dependency so the route sees the caller we want
+    # (None for a null/unauthenticated caller, "alice" for an authenticated one).
+    app.dependency_overrides[gallery_routes.require_user] = user_override
     app.include_router(gallery_routes.setup_gallery_routes())
     return TestClient(app)
 
@@ -122,8 +135,7 @@ def test_auth_disabled_null_user_gallery_routes_keep_single_user_mode(monkeypatc
 
 def test_authenticated_gallery_routes_remain_owner_scoped(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTH_ENABLED", "true")
-    monkeypatch.setattr(gallery_routes, "get_current_user", lambda request: "alice")
-    client = _client_with_gallery(monkeypatch, tmp_path)
+    client = _client_with_gallery(monkeypatch, tmp_path, user_override=_as_alice)
 
     library = client.get("/api/gallery/library").json()
     assert [item["id"] for item in library["items"]] == ["img-alice"]

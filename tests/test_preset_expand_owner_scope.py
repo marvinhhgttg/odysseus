@@ -54,7 +54,7 @@ def test_expand_scopes_model_resolution_to_cookie_user(monkeypatch):
 
     req = _FakeRequest({"name": "Pirate", "prompt": "talks like a pirate", "model": "test-model"},
                        current_user="alice")
-    result = asyncio.run(endpoint(req))
+    result = asyncio.run(endpoint(req, user="alice"))
 
     assert seen["owner"] == "alice"
     assert seen["spec"] == "test-model"
@@ -69,7 +69,7 @@ def test_expand_attributes_bearer_token_to_its_owner(monkeypatch):
 
     req = _FakeRequest({"name": "Pirate", "model": ""},
                        current_user="api", api_token=True, api_token_owner="bob")
-    asyncio.run(endpoint(req))
+    asyncio.run(endpoint(req, user="bob"))
 
     assert seen["owner"] == "bob"
 
@@ -79,7 +79,7 @@ def test_expand_short_circuits_without_input(monkeypatch):
     endpoint = _expand_endpoint()
 
     req = _FakeRequest({}, current_user="alice")
-    result = asyncio.run(endpoint(req))
+    result = asyncio.run(endpoint(req, user="alice"))
 
     # Nothing to expand: no model resolution attempted.
     assert result["success"] is False
