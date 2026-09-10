@@ -9,7 +9,6 @@
         "tests/test_tool_approval_enforcer.py",
         "tests/test_tool_approval_routes.py",
         "tests/test_tool_approval_agent_loop.py",
-        "tests/test_tool_approval_chat_stream.py",
         "tests/test_tool_approval_frontend_js.py"
       ]
     },
@@ -32,12 +31,6 @@
         "tests/test_tool_output_prompt_injection.py"
       ]
     },
-    "runtime": {
-      "description": "Real application boot, route surface and degraded-dependency startup",
-      "tests": [
-        "tests/test_runtime_smoke.py"
-      ]
-    },
     "grounding": {
       "description": "Claim-level web grounding and source attribution",
       "tests": [
@@ -45,6 +38,18 @@
         "tests/test_web_search_runtime_grounding.py",
         "tests/test_web_search_stream_grounding.py",
         "tests/test_search_content_block_source_index.py"
+      ]
+    },
+    "prompt_injection": {
+      "description": "Behavioral model evaluations against prompt injection via untrusted sources",
+      "tests": [
+        "tests/test_eval_prompt_injection.py"
+      ]
+    },
+    "runtime": {
+      "description": "Real application boot, route surface and degraded-dependency startup",
+      "tests": [
+        "tests/test_runtime_smoke.py"
       ]
     },
     "workflows": {
@@ -71,3 +76,4 @@
     }
   }
 }
+

@@ -37,6 +37,7 @@ def test_configured_eval_files_exist():
         "routing",
         "grounding",
         "prompt_safety",
+        "prompt_injection",
         "runtime",
         "workflows",
     }
