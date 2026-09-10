@@ -44,16 +44,28 @@ def test_on_exit():
 
 
 def test_open_browser():
+    # open_browser polls /api/ready before opening the browser, so stub a
+    # healthy backend to avoid the full 60s poll timeout.
+    class _Ready:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
     with mock.patch("webbrowser.open") as mock_open, \
+         mock.patch("urllib.request.urlopen", lambda *a, **k: _Ready()), \
          mock.patch("time.sleep") as mock_sleep:
 
         # Test when splash_root is None
         with mock.patch("launcher.splash_root", None):
             open_browser("http://127.0.0.1:7000")
             mock_open.assert_called_once_with("http://127.0.0.1:7000")
-            mock_sleep.assert_called_once_with(3.5)
 
     with mock.patch("webbrowser.open") as mock_open, \
+         mock.patch("urllib.request.urlopen", lambda *a, **k: _Ready()), \
          mock.patch("time.sleep") as mock_sleep:
         # Test when splash_root is present and gets destroyed
         mock_splash = mock.Mock()

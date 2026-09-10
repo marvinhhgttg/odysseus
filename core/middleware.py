@@ -4,7 +4,7 @@
 import os
 import secrets
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
@@ -28,32 +28,15 @@ def is_cors_preflight(method: str, headers) -> bool:
     return method == "OPTIONS" and "access-control-request-method" in headers
 
 
-def require_admin(request: Request):
-    """Raise 403 if the current user isn't an admin.
-    Allows access when auth is explicitly disabled, or when the request carries
-    the in-process internal-tool token used by loopback agent tools.
-    """
-    # In-process bypass for tool-layer loopback calls. Two paths:
-    # (a) header-direct (caller set X-Odysseus-Internal-Token), or
-    # (b) the auth middleware already validated the token and stamped
-    #     request.state.current_user = "internal-tool".
-    try:
-        hdr = request.headers.get(INTERNAL_TOOL_HEADER)
-        if hdr and secrets.compare_digest(hdr, INTERNAL_TOOL_TOKEN):
-            return
-        if getattr(request.state, "current_user", None) == INTERNAL_TOOL_USER:
-            return
-    except Exception:
-        pass
+def require_admin(request):
+    """DEPRECATED: compatibility alias only.
 
-    auth_mgr = getattr(request.app.state, "auth_manager", None)
-    if os.getenv("AUTH_ENABLED", "true").lower() == "false":
-        return
-    if not auth_mgr or not auth_mgr.is_configured:
-        raise HTTPException(403, "Admin only")
-    user = getattr(request.state, "current_user", None)
-    if not user or not auth_mgr.is_admin(user):
-        raise HTTPException(403, "Admin only")
+    Use ``src.auth_dependencies.require_admin`` (it supports ``Depends()``
+    and resolves the auth manager through the shared provider). Kept so
+    legacy callers and regression tests keep working; behaviour is identical.
+    """
+    from src.auth_dependencies import require_admin as _modern_require_admin
+    return _modern_require_admin(request)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

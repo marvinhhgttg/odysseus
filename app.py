@@ -5,39 +5,8 @@ import sys
 import asyncio
 import time
 
-# On Windows, asyncio.create_subprocess_exec/shell require the ProactorEventLoop.
-# When started via `python -m uvicorn` from a terminal, uvicorn sets this
-# automatically. But the VS Code debugger (and other non-uvicorn entrypoints)
-# use the default SelectorEventLoop, which raises NotImplementedError on any
-# subprocess call. Force ProactorEventLoop here so the right loop is always
-# used, regardless of how the process is launched.
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-
-def register_static_mime_types() -> None:
-    """Force stable JS module MIME types across platforms.
-
-    Some native Windows setups inherit stale/incorrect registry mappings for
-    ``.js``/``.mjs``, which can make Starlette serve ES modules with a non-JS
-    ``Content-Type`` and cause the UI to load but fail on click. Re-register the
-    standard MIME types at startup so static assets are served consistently.
-    """
-
-    mimetypes.add_type("text/javascript", ".js")
-    mimetypes.add_type("application/javascript", ".mjs")
-
-
-register_static_mime_types()
-
-# Windows: force HuggingFace/fastembed to COPY model files instead of symlinking.
-# On a network-share/UNC data dir Windows can't follow HF's symlinks ([WinError
-# 1463]), so the ONNX embedding model fails to load. huggingface_hub reads this
-# at import time, so set it before anything pulls it in. (Mirrored in
-# src/embeddings.py for non-server entrypoints.)
-if os.name == "nt":
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+from src.app_helpers import setup_environment, abs_join, serve_html_with_nonce
+setup_environment()
 
 from dotenv import load_dotenv
 # encoding="utf-8-sig" tolerates a UTF-8 BOM in .env — a common Windows gotcha
@@ -47,7 +16,7 @@ from dotenv import load_dotenv
 # utf-8-sig reads plain UTF-8 (no BOM) identically, so this is safe everywhere.
 load_dotenv(encoding="utf-8-sig")
 
-import asyncio
+
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -609,11 +578,86 @@ chat_handler      = components["chat_handler"]
 model_discovery   = components["model_discovery"]
 skills_manager    = components["skills_manager"]
 
+# Additional Managers consolidated for Registry
+from src.task_scheduler import TaskScheduler
+task_scheduler = TaskScheduler(session_manager)
+from src.event_bus import set_task_scheduler
+set_task_scheduler(task_scheduler)
+
+from src.mcp_manager import McpManager
+mcp_manager = McpManager()
+from src.agent_tools import set_mcp_manager
+set_mcp_manager(mcp_manager)
+
+from src.services.google_drive_organizer_service import GoogleDriveOrganizerService
+from src.integrations import get_integration
+class _GoogleDriveIntegrationsStoreAdapter:
+    def get_integration(self, owner_id=None, integration_id=None):
+        return get_integration(integration_id)
+google_drive_organizer_service = GoogleDriveOrganizerService(
+    integrations_store=_GoogleDriveIntegrationsStoreAdapter()
+)
+
+# Store critical managers on app.state for lifespan access
+app.state.task_scheduler = task_scheduler
+app.state.mcp_manager = mcp_manager
+app.state.model_discovery = model_discovery
+app.state.skills_manager = skills_manager
+
 # TTS
 from services.tts import get_tts_service
-
 tts_service = get_tts_service()
 logger.info("TTS service initialized (provider managed via admin settings)")
+
+# STT
+from services.stt import get_stt_service
+stt_service = get_stt_service()
+logger.info("STT service initialized (provider managed via settings)")
+
+
+# Additional Managers consolidated for Registry
+from src.task_scheduler import TaskScheduler
+task_scheduler = TaskScheduler(session_manager)
+from src.event_bus import set_task_scheduler
+set_task_scheduler(task_scheduler)
+
+from src.mcp_manager import McpManager
+mcp_manager = McpManager()
+from src.agent_tools import set_mcp_manager
+set_mcp_manager(mcp_manager)
+
+from src.services.google_drive_organizer_service import GoogleDriveOrganizerService
+from src.integrations import get_integration
+class _GoogleDriveIntegrationsStoreAdapter:
+    def get_integration(self, owner_id=None, integration_id=None):
+        return get_integration(integration_id)
+google_drive_organizer_service = GoogleDriveOrganizerService(
+    integrations_store=_GoogleDriveIntegrationsStoreAdapter()
+)
+
+# Webhook Manager (must be created before registry)
+from src.webhook_manager import WebhookManager
+webhook_manager = WebhookManager(api_key_manager=api_key_manager)
+app.state.webhook_manager = webhook_manager
+
+# Bundle for the Registry
+components.update({
+    "task_scheduler": task_scheduler,
+    "mcp_manager": mcp_manager,
+    "google_drive_organizer_service": google_drive_organizer_service,
+    "webhook_manager": webhook_manager,
+    "rag_manager": rag_manager,
+    "rag_available": rag_available,
+    "tts_service": tts_service,
+    "stt_service": stt_service,
+    "config": config,
+    "constants": {
+        "REQUEST_TIMEOUT": REQUEST_TIMEOUT, 
+        "OPENAI_API_KEY": OPENAI_API_KEY, 
+        "SESSIONS_FILE": SESSIONS_FILE
+    },
+    "auth_manager": auth_manager,
+})
 
 # ========= EXCEPTION HANDLERS =========
 @app.exception_handler(SessionNotFoundError)
@@ -632,18 +676,13 @@ async def llm_service_error_handler(request: Request, exc: LLMServiceError):
 async def web_search_error_handler(request: Request, exc: WebSearchError):
     return JSONResponse(status_code=502, content={"error": "WEB_SEARCH_ERROR", "message": str(exc)})
 
-# ========= WEBHOOK MANAGER =========
-from src.webhook_manager import WebhookManager
+# ========= ROUTER REGISTRATION (via registry) =========
+from src.router_registry import register_all_routes
+registry_extras = register_all_routes(app, components)
+upload_cleanup_func = registry_extras["upload_cleanup_func"]
+app.state.upload_cleanup_func = upload_cleanup_func
 
-webhook_manager = WebhookManager(api_key_manager=api_key_manager)
-
-# ========= INCLUDE ROUTERS =========
-
-# Auth
-auth_router = setup_auth_routes(auth_manager)
-app.include_router(auth_router)
-
-
+# Inline route: activity heartbeat (not in registry)
 @app.post("/api/activity/heartbeat")
 async def activity_heartbeat():
     from src.interactive_gate import mark_browser_activity
@@ -656,250 +695,24 @@ async def activity_heartbeat():
     asyncio.create_task(_stop_background())
     return {"ok": True}
 
-
-# Uploads
-from routes.upload_routes import setup_upload_routes
-upload_router, upload_cleanup_func = setup_upload_routes(upload_handler)
-app.include_router(upload_router)
-upload_cleanup_task = None
-
-# Emoji SVG proxy (same-origin, lazy-cached Twemoji) — lets the chat render
-# emojis as flat SVG instead of system color glyphs.
-from routes.emoji_routes import setup_emoji_routes
-app.include_router(setup_emoji_routes())
-
-# Sessions
-from routes.session_routes import setup_session_routes
-session_config = {"REQUEST_TIMEOUT": REQUEST_TIMEOUT, "OPENAI_API_KEY": OPENAI_API_KEY, "SESSIONS_FILE": SESSIONS_FILE}
-app.include_router(setup_session_routes(session_manager, session_config, webhook_manager=webhook_manager))
-
-# Admin Danger Zone wipes (Settings → System → Danger Zone)
-from routes.admin_wipe_routes import setup_admin_wipe_routes
-app.include_router(setup_admin_wipe_routes(session_manager))
-
-# Memory
-from routes.memory.memory_routes import setup_memory_routes
-memory_router = setup_memory_routes(memory_manager, session_manager, memory_vector=memory_vector)
-app.include_router(memory_router)
-from routes.skills_routes import setup_skills_routes
-app.include_router(setup_skills_routes(skills_manager))
-
-# Chat
-from routes.chat_routes import setup_chat_routes
-app.include_router(setup_chat_routes(
-    session_manager, chat_handler, chat_processor,
-    memory_manager, research_handler, upload_handler,
-    memory_vector=memory_vector,
-    webhook_manager=webhook_manager,
-    skills_manager=skills_manager,
-))
-
-# Research (background deep-research tasks)
-from routes.research.research_routes import setup_research_routes
-app.include_router(setup_research_routes(research_handler, session_manager=session_manager))
-
-# History
-from routes.history.history_routes import setup_history_routes
-app.include_router(setup_history_routes(session_manager))
-
-# Search
-from routes.search_routes import setup_search_routes
-app.include_router(setup_search_routes(config))
-
-# Presets
-from routes.preset_routes import setup_preset_routes
-app.include_router(setup_preset_routes(preset_manager))
-
-# Diagnostics
-from routes.diagnostics_routes import setup_diagnostics_routes
-app.include_router(setup_diagnostics_routes(rag_manager, rag_available, research_handler, memory_vector))
-
-# Cleanup
-from routes.cleanup_routes import setup_cleanup_routes
-app.include_router(setup_cleanup_routes(session_manager))
-
-# Personal docs
-from routes.personal_routes import setup_personal_routes
-app.include_router(setup_personal_routes(personal_docs_mgr, rag_manager, rag_available))
-
-# Embedding model management
-from routes.embedding_routes import setup_embedding_routes
-app.include_router(setup_embedding_routes())
-
-# Models
-from routes.model_routes import setup_model_routes
-app.include_router(setup_model_routes(model_discovery))
-
-# GitHub Copilot device-flow login
-from routes.copilot_routes import setup_copilot_routes
-app.include_router(setup_copilot_routes())
-
-# ChatGPT Subscription device-flow login
-from routes.chatgpt_subscription_routes import setup_chatgpt_subscription_routes
-app.include_router(setup_chatgpt_subscription_routes())
-
-# TTS
-from routes.tts_routes import setup_tts_routes
-app.include_router(setup_tts_routes(tts_service))
-
-# STT
-from services.stt import get_stt_service
-stt_service = get_stt_service()
-from routes.stt_routes import setup_stt_routes
-app.include_router(setup_stt_routes(stt_service))
-logger.info("STT service initialized (provider managed via settings)")
-
-# Documents (artifacts/canvas)
-from routes.document_routes import setup_document_routes
-document_router = setup_document_routes(session_manager, upload_handler)
-app.include_router(document_router)
-
-# Signatures (reusable image stamps)
-from routes.signature_routes import setup_signature_routes
-app.include_router(setup_signature_routes())
-
-# Gallery (image library)
-from routes.gallery.gallery_routes import setup_gallery_routes
-app.include_router(setup_gallery_routes())
-
-# Persisted image-editor drafts (server-backed projects)
-from routes.editor_draft_routes import setup_editor_draft_routes
-app.include_router(setup_editor_draft_routes())
-
-# Scheduled tasks + event bus
-from src.task_scheduler import TaskScheduler
-task_scheduler = TaskScheduler(session_manager)
-from src.event_bus import set_task_scheduler
-set_task_scheduler(task_scheduler)
-from routes.task_routes import setup_task_routes
-app.include_router(setup_task_routes(task_scheduler))
-
-from routes.assistant_routes import setup_assistant_routes
-app.include_router(setup_assistant_routes(task_scheduler))
-
-# Calendar (CalDAV)
-from routes.calendar_routes import setup_calendar_routes
-calendar_router = setup_calendar_routes()
-app.include_router(calendar_router)
-
-# Shell (user-facing command execution)
-from routes.shell_routes import setup_shell_routes
-app.include_router(setup_shell_routes())
-
-# Cookbook (model download/serve/cache, cookbook state sync)
-from routes.cookbook_routes import setup_cookbook_routes
-app.include_router(setup_cookbook_routes())
-
-from routes.workspace_routes import setup_workspace_routes
-app.include_router(setup_workspace_routes())
-
-# Hardware model fitting (cookbook "What Fits?" tab)
-from routes.hwfit_routes import setup_hwfit_routes
-app.include_router(setup_hwfit_routes())
-
-# Model A/B Comparison
-from routes.compare_routes import setup_compare_routes
-app.include_router(setup_compare_routes(session_manager))
-
-# User Preferences
-from routes.prefs_routes import setup_prefs_routes
-app.include_router(setup_prefs_routes())
-
-# Backup (export/import user data)
-from routes.backup_routes import setup_backup_routes
-app.include_router(setup_backup_routes(memory_manager, preset_manager, skills_manager))
-
-from routes.font_routes import setup_font_routes
-app.include_router(setup_font_routes())
-
-
-# MCP (Model Context Protocol)
-from src.mcp_manager import McpManager
-from src.agent_tools import set_mcp_manager
-from routes.mcp_routes import setup_mcp_routes
-
-mcp_manager = McpManager()
-set_mcp_manager(mcp_manager)
-app.include_router(setup_mcp_routes(mcp_manager))
-logger.info("MCP routes initialized")
-
-# AI Interaction tools (debates, pipelines, self-managing AI, UI control)
+# Non-router singleton initializations
+from src.event_bus import set_task_scheduler as _set_ts
+_set_ts(task_scheduler)
+from src.agent_tools import set_mcp_manager as _set_mm
+_set_mm(mcp_manager)
 from src.ai_interaction import set_session_manager as set_ai_session_manager, set_memory_manager as set_ai_memory_manager, set_rag_manager as set_ai_rag_manager
 set_ai_session_manager(session_manager)
 set_ai_memory_manager(memory_manager, memory_vector)
 set_ai_rag_manager(rag_manager, personal_docs_mgr)
 logger.info("AI interaction tools initialized (session, memory, RAG, UI control)")
 
-# Webhooks
-from routes.webhook_routes import setup_webhook_routes
-app.include_router(setup_webhook_routes(webhook_manager, auth_manager, session_manager, api_key_manager))
-
-# API Tokens
-from routes.api_token_routes import setup_api_token_routes
-app.include_router(setup_api_token_routes())
-
-# Google Drive Organizer
-from src.services.google_drive_organizer_service import GoogleDriveOrganizerService
-from routes.google_drive_organizer_routes import setup_google_drive_organizer_routes
-from src.integrations import get_integration
-
-class _GoogleDriveIntegrationsStoreAdapter:
-    def get_integration(self, owner_id=None, integration_id=None):
-        return get_integration(integration_id)
-
-google_drive_organizer_service = GoogleDriveOrganizerService(
-    integrations_store=_GoogleDriveIntegrationsStoreAdapter()
-)
-app.include_router(setup_google_drive_organizer_routes(google_drive_organizer_service))
-
-logger.info("Webhook & API token routes initialized")
-
-# Notes (Google Keep-style notes/todos)
-from routes.note_routes import setup_note_routes
-app.include_router(setup_note_routes(task_scheduler))
-
-# Email
-from routes.email_routes import setup_email_routes
-email_router = setup_email_routes()
-app.include_router(email_router)
-
-# Codex integration — HTTP surface for the Codex plugin/MCP bridge. Reuses
-# api_token scopes (todos:read|write, email:read|draft|send) so external
-# Codex sessions can only touch the data the user explicitly allowed. Mounted
-# AFTER email so the codex_routes can borrow the email router for shared
-# search/threading helpers.
-from routes.codex_routes import setup_codex_routes, setup_claude_routes
-app.include_router(setup_codex_routes(
-    email_router=email_router,
-    memory_router=memory_router,
-    calendar_router=calendar_router,
-    document_router=document_router,
-))
-app.include_router(setup_claude_routes())
-
-from routes.vault_routes import setup_vault_routes
-app.include_router(setup_vault_routes())
-
-# Contacts (CardDAV)
-from routes.contacts.contacts_routes import setup_contacts_routes
-app.include_router(setup_contacts_routes())
-
-from companion import setup_companion_routes
-app.include_router(setup_companion_routes())
-app.include_router(google_oauth_router)
-
-# ========= ROUTES (kept in app.py) =========
+# ========= ROOT & TOOL ROUTES =========
 
 @app.get("/")
 async def serve_index(request: Request):
     static_path = abs_join(BASE_DIR, "static/index.html")
     if os.path.exists(static_path):
         return serve_html_with_nonce(request, static_path)
-    # No static bundle — fall back to a root-level index.html if one is shipped.
-    # If neither exists, serve_html_with_nonce logs it and returns a generic 500:
-    # a missing index.html is a broken deployment (server fault), not a client
-    # "not found". This keeps the app-shell route consistent with the other
-    # bundled-template routes instead of mislabelling the fault as a 404.
     return serve_html_with_nonce(request, abs_join(BASE_DIR, "index.html"))
 
 @app.get("/notes")
@@ -910,10 +723,6 @@ async def serve_notes(request: Request):
 async def serve_calendar(request: Request):
     return await serve_index(request)
 
-# Per-tool deep-link routes — all serve the same SPA, the JS auto-opens
-# the matching modal based on window.location.pathname. Each route also
-# gets a unique favicon + page title via inline script in index.html so
-# bookmarks render with tool-specific icons.
 @app.get("/cookbook")
 async def serve_cookbook(request: Request):
     return await serve_index(request)
@@ -989,7 +798,6 @@ async def client_perf(request: Request):
 @app.get("/api/ready")
 async def readiness_check() -> JSONResponse:
     """Readiness / integrity self-check — DB, data dir, local-first storage.
-
     Unlike /api/health (liveness), this returns 503 unless every critical
     subsystem is whole, so an orchestrator can gate traffic on real readiness.
     """
@@ -1017,304 +825,25 @@ async def runtime_info() -> Dict[str, object]:
         "ollama_base_url": ollama_url,
     }
 
+@app.post("/api/activity/heartbeat")
+async def activity_heartbeat():
+    from src.interactive_gate import mark_browser_activity
+    await mark_browser_activity()
+    async def _stop_background():
+        try:
+            await task_scheduler.stop_background_tasks_for_foreground(reason="browser heartbeat")
+        except Exception:
+            logging.getLogger("app.foreground_gate").debug("heartbeat task stop failed", exc_info=True)
+    asyncio.create_task(_stop_background())
+    return {"ok": True}
+
+
 # ========= LIFECYCLE =========
+from src.lifespan import lifespan
 
-@asynccontextmanager
-async def _lifespan(app):
-    """Modern lifespan context manager replacing deprecated @app.on_event."""
-    # ── STARTUP ──
-    await _startup_event()
-    yield
-    # ── SHUTDOWN ──
-    await _shutdown_event()
-
-app.router.lifespan_context = _lifespan
+app.router.lifespan_context = lifespan
 
 
-async def _startup_event():
-    global upload_cleanup_task
-    logger.info("Application starting up...")
-    webhook_manager.set_loop(asyncio.get_running_loop())
-    # Wipe any leftover incognito sessions from previous process — they're
-    # ephemeral by design and must not survive a restart.
-    try:
-        from core.database import SessionLocal as _SL, Session as _DbSess, ChatMessage as _DbMsg
-        _db = _SL()
-        try:
-            _ghosts = _db.query(_DbSess).filter(_DbSess.name.in_(("Nobody", "Incognito"))).all()
-            for _g in _ghosts:
-                _db.query(_DbMsg).filter(_DbMsg.session_id == _g.id).delete()
-                _db.delete(_g)
-            if _ghosts:
-                _db.commit()
-                logger.info(f"Purged {len(_ghosts)} leftover incognito session(s)")
-        finally:
-            _db.close()
-    except Exception as e:
-        logger.debug(f"Incognito purge skipped: {e}")
-    # Strong refs to fire-and-forget startup tasks. Without this, Python may
-    # GC tasks created with `asyncio.create_task(...)` before they finish.
-    _startup_tasks: list[asyncio.Task] = getattr(app.state, "_startup_tasks", [])
-    app.state._startup_tasks = _startup_tasks
-    if upload_cleanup_func:
-        upload_cleanup_task = asyncio.create_task(upload_cleanup_func())
-    # Always-on monitor that auto-continues the agent when a background bash
-    # job (#!bg) finishes — re-invokes the turn with the job output.
-    try:
-        from src.bg_monitor import start_bg_monitor
-        _startup_tasks.append(start_bg_monitor())
-    except Exception as _e:
-        logger.warning("Failed to start background-job monitor: %s", _e)
-    # MCP servers can be slow or blocked by local tooling. Connect them after
-    # the web server is accepting traffic instead of delaying the whole UI.
-    async def _startup_mcp_connections():
-        try:
-            from src.builtin_mcp import register_builtin_servers
-            await register_builtin_servers(mcp_manager)
-        except BaseException as e:
-            logger.warning(f"Built-in MCP registration failed (non-critical): {type(e).__name__}: {e}")
-        try:
-            await asyncio.wait_for(mcp_manager.connect_all_enabled(), timeout=20)
-        except asyncio.TimeoutError:
-            logger.warning("User MCP startup timed out (non-critical)")
-        except BaseException as e:
-            logger.warning(f"MCP startup failed (non-critical): {type(e).__name__}: {e}")
-
-    _startup_tasks.append(asyncio.create_task(_startup_mcp_connections()))
-
-    # Startup warmups are opt-in. They make later requests a little warmer, but
-    # they also compete with the first seconds of real UI use on slow or busy
-    # machines. Default to clear/idle startup and let requests warm what they use.
-    _startup_warmups_enabled = str(os.getenv("ODYSSEUS_STARTUP_WARMUPS", "")).lower() in {"1", "true", "yes", "on"}
-    if _startup_warmups_enabled:
-        async def _warmup_tool_index():
-            try:
-                from src.tool_index import get_tool_index
-                idx = await asyncio.to_thread(get_tool_index)
-                if idx:
-                    await asyncio.to_thread(idx.get_tools_for_query, "warmup", 8)
-                    logger.info("[startup] Tool index pre-warmed")
-            except Exception as e:
-                logger.warning(f"Tool index warmup failed (non-critical): {type(e).__name__}: {e}")
-
-        _startup_tasks.append(asyncio.create_task(_warmup_tool_index()))
-
-        async def _warmup_endpoints():
-            try:
-                import httpx
-                urls = (
-                    await asyncio.to_thread(model_discovery.warmup_ping_urls)
-                    if model_discovery else []
-                )
-                for url in urls:
-                    try:
-                        async with httpx.AsyncClient(timeout=5.0) as client:
-                            await client.get(url)
-                        logger.info(f"Warmup ping OK: {url}")
-                    except Exception as e:
-                        logger.debug(f"Warmup ping failed for endpoint: {e}")
-            except Exception as e:
-                logger.debug(f"Warmup ping skipped: {e}")
-
-        _startup_tasks.append(asyncio.create_task(_warmup_endpoints()))
-    else:
-        logger.info("Startup warmups disabled (set ODYSSEUS_STARTUP_WARMUPS=1 to enable)")
-
-    # Keep-alive is opt-in. The ping path performs model discovery, and when
-    # stale LAN endpoints are configured it can add periodic backend pressure
-    # that delays unrelated UI requests such as Notes/Documents.
-    _keepalive_enabled = str(os.getenv("ODYSSEUS_MODEL_KEEPALIVE", "")).lower() in {"1", "true", "yes", "on"}
-    if _keepalive_enabled:
-        async def _keepalive_loop():
-            while True:
-                try:
-                    await asyncio.sleep(60)
-                    await _warmup_endpoints()
-                except Exception as e:
-                    logger.warning(f"Keepalive loop error: {e}")
-                    await asyncio.sleep(300)  # Back off on error
-
-        _startup_tasks.append(asyncio.create_task(_keepalive_loop()))
-
-    async def _ensure_default_tasks():
-        # Create/reconcile default automation tasks + personal assistant for every user.
-        owners = set()
-        try:
-            import json as _json
-            auth_path = AUTH_FILE
-            with open(auth_path, encoding="utf-8") as f:
-                users = _json.load(f).get("users", {})
-            owners.update(users.keys())
-        except Exception as e:
-            logger.debug(f"Default task auth-owner scan: {e}")
-
-        # Also reconcile owners already present in scheduled_tasks. This cleans
-        # up stale/demo/deleted-user built-ins that are no longer in auth.json;
-        # otherwise their old scheduled rows can keep firing forever.
-        try:
-            from core.database import SessionLocal, ScheduledTask
-            from src.task_scheduler import HOUSEKEEPING_DEFAULTS
-            builtin_names = []
-            for defs in HOUSEKEEPING_DEFAULTS.values():
-                builtin_names.append(defs["name"])
-                builtin_names.extend(defs.get("legacy_names") or [])
-            db_seed = SessionLocal()
-            try:
-                rows = db_seed.query(ScheduledTask.owner).filter(
-                    (ScheduledTask.action.in_(list(HOUSEKEEPING_DEFAULTS.keys())))
-                    | (ScheduledTask.name.in_(builtin_names))
-                ).distinct().all()
-                owners.update(row[0] for row in rows if row[0])
-            finally:
-                db_seed.close()
-        except Exception as e:
-            logger.debug(f"Default task existing-owner scan: {e}")
-
-        try:
-            for uname in sorted(owners):
-                try:
-                    await task_scheduler.ensure_defaults(uname)
-                except Exception as e:
-                    logger.debug(f"ensure_defaults({uname}): {e}")
-        except Exception as e:
-            logger.debug(f"Default tasks: {e}")
-
-    # Reconcile built-in tasks before the runner starts. Otherwise legacy
-    # scheduled built-ins can fire once before being converted to event tasks.
-    await _ensure_default_tasks()
-
-    # Disk-backed skills are not covered by the DB legacy-owner sweep. Repair
-    # ownerless or deleted/test-owner SKILL.md files so strict owner filtering
-    # does not make an existing library look empty after auth/account changes.
-    try:
-        import json as _json
-        auth_path = AUTH_FILE
-        with open(auth_path, encoding="utf-8") as f:
-            users = _json.load(f).get("users", {})
-        primary_owner = None
-        for uname, udata in users.items():
-            if udata.get("is_admin") is True:
-                primary_owner = uname
-                break
-        if not primary_owner and users:
-            primary_owner = next(iter(users))
-        if primary_owner:
-            changed = skills_manager.backfill_owner(primary_owner, set(users.keys()))
-            if changed:
-                logger.info("Assigned %s legacy skill file(s) to %s", changed, primary_owner)
-    except Exception as e:
-        logger.debug(f"Skill owner backfill skipped: {e}")
-
-    # Start scheduled task runner — skip when running under a cron-driven
-    # deployment where an external worker drives task firing. Mirrors
-    # `ODYSSEUS_INPROCESS_POLLERS` from the email pollers.
-    _tasks_inprocess = os.environ.get("ODYSSEUS_INPROCESS_TASKS", "1").strip().lower()
-    if _tasks_inprocess not in ("0", "false", "no", "off", ""):
-        await task_scheduler.start()
-    else:
-        logger.info(
-            "In-process task scheduler disabled (ODYSSEUS_INPROCESS_TASKS=0); "
-            "drive task firing externally (e.g. cron)."
-        )
-    # Periodic null-owner sweep — re-runs the legacy-owner assignment hourly
-    # so any data created while auth was disabled / localhost-bypassed gets
-    # claimed by the admin instead of staying world-visible (M19).
-    async def _null_owner_sweep_loop():
-        while True:
-            try:
-                await asyncio.sleep(3600)
-                from core.database import _migrate_assign_legacy_owner
-                await asyncio.to_thread(_migrate_assign_legacy_owner)
-            except Exception as e:
-                logger.debug(f"Null-owner sweep skipped: {e}")
-                await asyncio.sleep(3600)
-
-    _startup_tasks.append(asyncio.create_task(_null_owner_sweep_loop()))
-
-    # Nightly skill audit — at ~02:00 local, test + judge a batch of the
-    # least-recently-checked skills, auto-fixing/escalating weak ones (never
-    # deletes). Rotates through the library so each night covers different
-    # skills. Gated by the `skill_audit_nightly` setting (default on); hour via
-    # `skill_audit_hour` (default 2), batch size via `skill_audit_batch` (8).
-    async def _skill_audit_nightly_loop():
-        from datetime import timedelta
-        while True:
-            try:
-                from src.settings import get_setting
-                hour = int(get_setting("skill_audit_hour", 2) or 2)
-            except Exception:
-                hour = 2
-            now = datetime.now()
-            nxt = now.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
-            if nxt <= now:
-                nxt += timedelta(days=1)
-            await asyncio.sleep(max(60, (nxt - now).total_seconds()))
-            try:
-                from src.settings import get_setting
-                if not get_setting("skill_audit_nightly", True):
-                    continue
-                batch = int(get_setting("skill_audit_batch", 8) or 8)
-                from routes.skills_routes import run_scheduled_skill_audit
-                await run_scheduled_skill_audit(skills_manager, owner=None, max_skills=batch)
-            except Exception as e:
-                logger.warning(f"Nightly skill audit failed: {e}")
-
-    _startup_tasks.append(asyncio.create_task(_skill_audit_nightly_loop()))
-
-    # Cookbook serve lifecycle — kills scheduler-launched serves whose
-    # window-end has passed. Paired with the cookbook_serve builtin
-    # action; both are no-ops unless a scheduled task actually launches
-    # something with end_after_min set. Removing this line + the
-    # cookbook_serve entry in BUILTIN_ACTIONS + src/cookbook_serve_lifecycle.py
-    # removes the feature.
-    from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
-    _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
-
-    # Proactive Google OAuth token refresh. Reactive refresh in
-    # ensure_fresh_google_token() only kicks in when a request comes in
-    # inside the last 5 minutes before expiry; if Odysseus sits idle for
-    # days, the access_token can silently expire and the *next* user
-    # action sees a stale-token error before the reactive path runs. This
-    # loop sweeps hourly and refreshes any Google integration whose token
-    # expires inside the next 24 hours, so the first user request after a
-    # long idle window always finds a fresh token.
-    try:
-        from src.services.google_oauth_maintenance import maintenance_loop as _oauth_sweep
-        from src.services.google_oauth_service import refresh_access_token as _google_refresh
-        from src.integrations import load_integrations as _load_integrations
-        _startup_tasks.append(asyncio.create_task(_oauth_sweep(
-            load_integrations=_load_integrations,
-            refresh=_google_refresh,
-        )))
-    except Exception as e:
-        logger.warning(f"drive-oauth maintenance loop not started: {e}")
-
-    logger.info("Application startup complete")
-
-async def _shutdown_event():
-    logger.info("Application shutting down...")
-    if upload_cleanup_task:
-        upload_cleanup_task.cancel()
-        try:
-            await upload_cleanup_task
-        except asyncio.CancelledError:
-            pass
-    # Stop task scheduler (no-op if it never started under the gate)
-    try:
-        await task_scheduler.stop()
-    except Exception:
-        pass
-    # Close webhook manager
-    try:
-        await webhook_manager.close()
-    except Exception as e:
-        logger.warning(f"Webhook manager shutdown error: {e}")
-    # Disconnect all MCP servers
-    try:
-        await mcp_manager.disconnect_all()
-    except Exception as e:
-        logger.warning(f"MCP shutdown error: {e}")
-    logger.info("Application shutdown complete")
 
 
 if __name__ == "__main__":

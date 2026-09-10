@@ -110,8 +110,21 @@ def setup_system_tray(url):
 
 
 def open_browser(url):
-    # Allow uvicorn and app lifecycles to complete warmups
-    time.sleep(3.5)
+    # Poll the /api/ready endpoint to verify the backend is fully initialized
+    # before opening the browser. This replaces the hardcoded 3.5s sleep.
+    ready_url = f"{url}/api/ready"
+    timeout = 60  # Max wait time in seconds
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            import urllib.request
+            with urllib.request.urlopen(ready_url, timeout=2) as response:
+                if response.status == 200:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.5) # Poll every 500ms
 
     # Safely close the splash screen
     try:
@@ -122,6 +135,7 @@ def open_browser(url):
         pass
 
     webbrowser.open(url)
+
 
 
 if __name__ == "__main__":
