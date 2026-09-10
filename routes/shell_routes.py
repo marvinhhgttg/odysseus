@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Any
 from core.platform_compat import IS_APPLE_SILICON, which_tool
 from core.middleware import INTERNAL_TOOL_USER
+from src.auth_dependencies import require_admin
 from src.host_docker_access import (
     HOST_DOCKER_ACCESS_HINT,
     host_docker_access_enabled as _host_docker_access_enabled,
@@ -38,7 +39,7 @@ except ImportError as exc:
 else:
     _PTY_IMPORT_ERROR = None
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -50,23 +51,7 @@ from core.platform_compat import (
 )
 
 
-def _require_admin(request: Request):
-    """Reject non-admin callers. Shell exec is admin-only — never expose to
-    regular users; that's RCE-after-signup."""
-    auth_manager = getattr(request.app.state, "auth_manager", None)
-    if not auth_manager:
-        # No auth at all — only safe in fully-trusted localhost dev mode
-        return
-    user = getattr(request.state, "current_user", None)
-    # In-process tool loopback. The AuthMiddleware already validated the
-    # internal token + loopback client before setting this marker, so
-    # honour it here as admin-equivalent.
-    if user == INTERNAL_TOOL_USER:
-        return
-    if not user or user == "api":
-        raise HTTPException(403, "Admin only")
-    if not auth_manager.is_admin(user):
-        raise HTTPException(403, "Admin only")
+
 
 
 def _reject_cross_site(request: Request):
@@ -859,9 +844,8 @@ def setup_shell_routes() -> APIRouter:
     router = APIRouter(tags=["shell"])
 
     @router.post("/api/shell/exec")
-    async def shell_exec(request: Request, req: ShellExecRequest) -> Dict[str, Any]:
+    async def shell_exec(request: Request, req: ShellExecRequest, _admin: None = Depends(require_admin)) -> Dict[str, Any]:
         """Execute a shell command and return output. Admin only."""
-        _require_admin(request)
         cmd = req.command.strip()
         if not cmd:
             return {"stdout": "", "stderr": "No command provided", "exit_code": 1}
@@ -877,9 +861,8 @@ def setup_shell_routes() -> APIRouter:
         return result
 
     @router.post("/api/shell/stream")
-    async def shell_stream(request: Request, req: ShellExecRequest):
+    async def shell_stream(request: Request, req: ShellExecRequest, _admin: None = Depends(require_admin)):
         """Execute a shell command and stream output line-by-line via SSE. Admin only."""
-        _require_admin(request)
         cmd = req.command.strip()
         if not cmd:
 
@@ -1096,7 +1079,6 @@ def setup_shell_routes() -> APIRouter:
         server over SSH, inside its venv — otherwise installing on a remote box
         never reflected because the check only ever looked at the local host.
         """
-        _require_admin(request)
         _reject_cross_site(request)
         import importlib.metadata as importlib_metadata
         import shlex
@@ -1571,9 +1553,8 @@ def setup_shell_routes() -> APIRouter:
         return {"packages": packages}
 
     @router.post("/api/cookbook/packages/install")
-    async def install_package(request: Request):
+    async def install_package(request: Request, _admin: None = Depends(require_admin)):
         """Install a package via pip. Admin only — pip install is effectively code exec."""
-        _require_admin(request)
         import sys as _sys
 
         body = await request.json()
@@ -1614,7 +1595,7 @@ def setup_shell_routes() -> APIRouter:
         return {"ok": False, "error": stderr.decode()[-300:]}
 
     @router.post("/api/cookbook/install-system-deps")
-    async def install_system_deps(request: Request):
+    async def install_system_deps(request: Request, _admin: None = Depends(require_admin)):
         """Install OS-level system packages (cmake/build-essential/git/tmux)
         on a remote target or in the local container. Admin only.
 
@@ -1624,7 +1605,6 @@ def setup_shell_routes() -> APIRouter:
         clear "needs sudo password" error instead of hanging when interactive
         sudo is required.
         """
-        _require_admin(request)
         body = await request.json()
         raw = body.get("packages") or []
         host = (body.get("remote_host") or "").strip()
@@ -1735,7 +1715,7 @@ def setup_shell_routes() -> APIRouter:
         }
 
     @router.post("/api/cookbook/rebuild-engine")
-    async def rebuild_engine(request: Request):
+    async def rebuild_engine(request: Request, _admin: None = Depends(require_admin)):
         """Clear the cached llama.cpp build so the next serve recompiles.
 
         Admin only — this removes the Cookbook-managed ``~/bin/llama-server``
@@ -1745,7 +1725,6 @@ def setup_shell_routes() -> APIRouter:
         present. This is the missing "force a fresh GPU build" lever for hosts
         stuck on a CPU-only llama-server.
         """
-        _require_admin(request)
         from routes.cookbook_helpers import _llama_cpp_rebuild_cmd
 
         body = await request.json()

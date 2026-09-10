@@ -20,7 +20,7 @@ from src.auth_helpers import require_user
 from src.constants import COOKBOOK_STATE_FILE
 from pydantic import BaseModel
 
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 from routes._validators import validate_remote_host, validate_ssh_port
 from core.platform_compat import (
     IS_WINDOWS,
@@ -877,8 +877,7 @@ def setup_cookbook_routes() -> APIRouter:
         return None
 
     @router.get("/api/cookbook/ssh-key")
-    async def get_cookbook_ssh_key(request: Request):
-        require_admin(request)
+    async def get_cookbook_ssh_key(request: Request, _admin: None = Depends(require_admin)):
         public_key = _read_cookbook_public_key()
         return {
             "configured": bool(public_key),
@@ -886,8 +885,7 @@ def setup_cookbook_routes() -> APIRouter:
         }
 
     @router.post("/api/cookbook/ssh-key")
-    async def generate_cookbook_ssh_key(request: Request):
-        require_admin(request)
+    async def generate_cookbook_ssh_key(request: Request, _admin: None = Depends(require_admin)):
         ssh_dir = _cookbook_ssh_dir()
         key_path = _cookbook_ssh_key_path()
         ssh_dir.mkdir(parents=True, exist_ok=True)
@@ -916,9 +914,8 @@ def setup_cookbook_routes() -> APIRouter:
         ssh_port: str | None = None
 
     @router.post("/api/cookbook/test-ssh")
-    async def test_cookbook_ssh(request: Request, req: CookbookSshTestRequest):
+    async def test_cookbook_ssh(request: Request, req: CookbookSshTestRequest, _admin: None = Depends(require_admin)):
         """Test a configured Cookbook SSH target without using generic shell exec."""
-        require_admin(request)
         host = validate_remote_host(req.host)
         ssh_port = validate_ssh_port(req.ssh_port)
         try:
@@ -1002,11 +999,10 @@ def setup_cookbook_routes() -> APIRouter:
         return {"pid": proc.pid, "log_path": str(log_path)}
 
     @router.post("/api/model/download")
-    async def model_download(request: Request, req: ModelDownloadRequest):
+    async def model_download(request: Request, req: ModelDownloadRequest, _admin: None = Depends(require_admin), owner: str = Depends(require_user)):
         """Download a HuggingFace model in a tmux session.
         Uses `hf download` CLI directly — runs in tmux via `script -qc`
         for real TTY progress, streams ANSI-stripped output via log file."""
-        require_admin(request)
         # Defence-in-depth: even though this endpoint is admin-gated, refuse
         # values that would land in shell contexts with metacharacters.
         backend = (req.backend or "").strip().lower()
@@ -1331,7 +1327,6 @@ def setup_cookbook_routes() -> APIRouter:
         try:
             from src.assistant_log import log_to_assistant
             from src.auth_helpers import get_current_user
-            owner = get_current_user(request)
             log_to_assistant(
                 owner,
                 f"Started downloading {req.repo_id} to {remote or 'local'}",
@@ -1343,9 +1338,8 @@ def setup_cookbook_routes() -> APIRouter:
         return {"ok": True, "session_id": session_id, "remote": remote or "local"}
 
     @router.get("/api/model/cached")
-    async def model_cached(request: Request, host: str | None = None, model_dir: str | None = None, ssh_port: str | None = None, platform: str | None = None):
+    async def model_cached(request: Request, host: str | None = None, model_dir: str | None = None, ssh_port: str | None = None, platform: str | None = None, _admin: None = Depends(require_admin)):
         """List cached models. Scans HF cache + optional model directory."""
-        require_admin(request)
         # Validate shell-bound inputs, matching the sibling list_gpus endpoint —
         # `host`/`ssh_port` are interpolated into an ssh command below, so an
         # unvalidated value (e.g. "x'; rm -rf ~ #") would be command injection.
@@ -1877,7 +1871,7 @@ def setup_cookbook_routes() -> APIRouter:
             db.close()
 
     @router.post("/api/model/serve")
-    async def model_serve(request: Request, req: ServeRequest):
+    async def model_serve(request: Request, req: ServeRequest, _admin: None = Depends(require_admin), owner: str = Depends(require_user)):
         """Launch a model server in a tmux session (or PowerShell background process on Windows).
 
         `repo_id` is dual-purpose: a HuggingFace repo (`<org>/<name>`) for
@@ -1887,7 +1881,6 @@ def setup_cookbook_routes() -> APIRouter:
         keep strict validation, but serving local cached models must not require
         a fake org/name wrapper.
         """
-        require_admin(request)
         # Defence-in-depth: reject values that could break out of shell contexts.
         validate_remote_host(req.remote_host)
         req.ssh_port = validate_ssh_port(req.ssh_port)
@@ -2618,7 +2611,6 @@ def setup_cookbook_routes() -> APIRouter:
         try:
             from src.assistant_log import log_to_assistant
             from src.auth_helpers import get_current_user
-            owner = get_current_user(request)
             short = req.repo_id.split("/")[-1] if "/" in req.repo_id else req.repo_id
             log_to_assistant(
                 owner,
@@ -2638,9 +2630,8 @@ def setup_cookbook_routes() -> APIRouter:
         ssh_port: str | None = None
 
     @router.post("/api/cookbook/setup")
-    async def server_setup(request: Request, req: SetupRequest):
+    async def server_setup(request: Request, req: SetupRequest, _admin: None = Depends(require_admin)):
         """Install required dependencies on a remote server via SSH."""
-        require_admin(request)
         host = validate_remote_host(req.host)
         if not host:
             raise HTTPException(400, "host is required")
@@ -2942,7 +2933,7 @@ def setup_cookbook_routes() -> APIRouter:
         }
 
     @router.get("/api/cookbook/gpus")
-    async def list_gpus(request: Request, host: str | None = None, ssh_port: str | None = None):
+    async def list_gpus(request: Request, host: str | None = None, ssh_port: str | None = None, _admin: None = Depends(require_admin)):
         """Probe GPU memory/process state locally or via SSH.
 
         Probe order:
@@ -2960,7 +2951,6 @@ def setup_cookbook_routes() -> APIRouter:
             ]}
         `busy` is True when free_mb/total_mb < 0.5.
         """
-        require_admin(request)
         host = validate_remote_host(host)
         ssh_port = validate_ssh_port(ssh_port)
         gpu_query = "nvidia-smi --query-gpu=index,name,memory.free,memory.total,memory.used,utilization.gpu,uuid --format=csv,noheader,nounits"
@@ -3117,14 +3107,13 @@ def setup_cookbook_routes() -> APIRouter:
         signal: str = "TERM"  # TERM (graceful) or KILL (force)
 
     @router.post("/api/cookbook/kill-pid")
-    async def kill_pid(request: Request, req: KillPidRequest):
+    async def kill_pid(request: Request, req: KillPidRequest, _admin: None = Depends(require_admin)):
         """Kill a PID that's holding GPU memory.
 
         Admin-gated. Validates PID is positive int, signal is TERM/KILL, and
         forbids low PIDs (<100) to avoid accidentally signalling init/system
         daemons. Uses `kill -<sig> <pid>` locally or over SSH.
         """
-        require_admin(request)
         if req.pid < 100:
             raise HTTPException(400, f"Refusing to signal PID {req.pid} (<100, likely system process)")
         sig = (req.signal or "TERM").upper()
@@ -3168,9 +3157,8 @@ def setup_cookbook_routes() -> APIRouter:
     # ── Cookbook state persistence (cross-device sync) ──
 
     @router.get("/api/cookbook/state")
-    async def get_cookbook_state(request: Request):
+    async def get_cookbook_state(request: Request, _admin: None = Depends(require_admin)):
         """Load saved cookbook state (tasks, servers, presets, settings)."""
-        require_admin(request)
         now = time.monotonic()
         try:
             mtime = _cookbook_state_path.stat().st_mtime if _cookbook_state_path.exists() else 0.0
@@ -3196,7 +3184,7 @@ def setup_cookbook_routes() -> APIRouter:
         return client_state
 
     @router.post("/api/cookbook/state")
-    async def save_cookbook_state(request: Request):
+    async def save_cookbook_state(request: Request, _admin: None = Depends(require_admin)):
         """Save cookbook state for cross-device sync.
 
         Admin-gated because cookbook state is read back into shell-quoting
@@ -3210,7 +3198,6 @@ def setup_cookbook_routes() -> APIRouter:
         omits but was added in the last RACE_WINDOW seconds — that's a
         race, not an intentional delete.
         """
-        require_admin(request)
         RACE_WINDOW_MS = 60_000
         try:
             from core.atomic_io import atomic_write_json
@@ -3997,14 +3984,13 @@ def setup_cookbook_routes() -> APIRouter:
         return normalized
 
     @router.get("/api/cookbook/tasks/status")
-    async def cookbook_tasks_status(request: Request):
+    async def cookbook_tasks_status(request: Request, _admin: None = Depends(require_admin)):
         """Check status of all active cookbook tmux sessions.
 
         Critical: every subprocess.run inside this handler is a sync blocking
         call that — when this was a plain async def — froze the entire server
         event loop. Now the whole body runs in a worker thread via
         asyncio.to_thread so other requests stay responsive."""
-        require_admin(request)
         now = time.monotonic()
         cached = _tasks_status_cache.get("value")
         if cached is not None and now - float(_tasks_status_cache.get("ts") or 0) < 2.0:

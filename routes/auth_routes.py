@@ -1,6 +1,13 @@
 """Authentication routes — login, logout, signup, status, user management."""
 
-from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi import APIRouter, Request, Response, HTTPException, Depends
+from src.auth_dependencies import invalidate_token_cache
+from src.components import (
+    get_upload_handler,
+    get_session_manager,
+    get_research_handler,
+    get_personal_docs_manager,
+)
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
@@ -304,7 +311,15 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         return {"ok": True, "privileges": auth_manager.get_privileges(username)}
 
     @router.put("/users/{username}/rename")
-    async def rename_user(username: str, body: RenameUserRequest, request: Request):
+    async def rename_user(
+        username: str,
+        body: RenameUserRequest,
+        request: Request,
+        _research_handler=Depends(get_research_handler),
+        _upload_handler=Depends(get_upload_handler),
+        _personal_docs_manager=Depends(get_personal_docs_manager),
+        _session_manager=Depends(get_session_manager),
+    ):
         user = _get_current_user(request)
         if not user or not auth_manager.is_admin(user):
             raise HTTPException(403, "Admin only")
@@ -396,8 +411,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         # completed JSON files so a job that finishes during the rename saves
         # with the new owner or is caught by the disk sweep below.
         try:
-            rh = getattr(request.app.state, "research_handler", None)
-            rename_owner = getattr(rh, "rename_owner", None)
+            rename_owner = getattr(_research_handler, "rename_owner", None)
             if callable(rename_owner):
                 rename_owner(old_username, new_username)
         except Exception as e:
@@ -442,8 +456,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         # owner-prefixed index keys for dedupe. Rename both so attachments keep
         # resolving after the account username changes.
         try:
-            upload_handler = getattr(request.app.state, "upload_handler", None)
-            rename_owner = getattr(upload_handler, "rename_owner", None)
+            rename_owner = getattr(_upload_handler, "rename_owner", None)
             if callable(rename_owner):
                 rename_owner(old_username, new_username)
         except Exception as e:
@@ -454,13 +467,12 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         # search. Keep both in sync with the auth rename.
         try:
             from routes.personal_routes import rename_personal_upload_owner
-            personal_docs_manager = getattr(request.app.state, "personal_docs_manager", None)
-            if personal_docs_manager is not None:
-                rag_manager = getattr(personal_docs_manager, "rag_manager", None)
+            if _personal_docs_manager is not None:
+                rag_manager = getattr(_personal_docs_manager, "rag_manager", None)
                 rename_personal_upload_owner(
                     old_username,
                     new_username,
-                    personal_docs_manager=personal_docs_manager,
+                    personal_docs_manager=_personal_docs_manager,
                     rag_manager=rag_manager,
                 )
         except Exception as e:
@@ -510,9 +522,8 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         # sessions are invisible on the next /api/sessions call because
         # get_sessions_for_user does an exact `s.owner == username` comparison
         # against stale in-memory values.
-        sm = getattr(request.app.state, "session_manager", None)
-        if sm is not None:
-            for sess in list(getattr(sm, "sessions", {}).values()):
+        if _session_manager is not None:
+            for sess in list(getattr(_session_manager, "sessions", {}).values()):
                 if str(getattr(sess, "owner", None) or "").strip().lower() == old_username:
                     sess.owner = new_username
 
@@ -521,9 +532,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         # refreshing it, the renamed user's API tokens resolve to the old (now
         # non-existent) owner and stop reaching their data until the cache next
         # goes dirty. Invalidate it now, like the token CRUD routes do.
-        invalidator = getattr(request.app.state, "invalidate_token_cache", None)
-        if callable(invalidator):
-            invalidator()
+        invalidate_token_cache(request)
         return {"ok": True, "username": new_username, "renamed_self": old_username == user}
 
     @router.put("/users/{username}/admin")
@@ -584,9 +593,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
 
         def _invalidate_api_token_cache():
             try:
-                invalidator = getattr(request.app.state, "invalidate_token_cache", None)
-                if invalidator:
-                    invalidator()
+                invalidate_token_cache(request)
             except Exception:
                 pass
 

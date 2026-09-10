@@ -13,12 +13,12 @@ import httpx
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, urlunparse
-from fastapi import APIRouter, HTTPException, Form, Query, Body, Request, Response
+from fastapi import APIRouter, HTTPException, Form, Query, Body, Request, Response, Depends
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from core.database import SessionLocal, ModelEndpoint, Session as DbSession
 from core.log_safety import redact_url as _redact_url_for_log
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin, get_effective_user, get_auth_manager
 from src.constants import COOKBOOK_STATE_FILE
 from src.llm_core import _detect_provider, _host_match, ANTHROPIC_MODELS
 from src.tls_overrides import llm_verify
@@ -1457,7 +1457,7 @@ def setup_model_routes(model_discovery):
         return {"hosts": [], "items": items}
 
     @router.get("/models")
-    def api_models(request: Request, refresh: bool = False, background: bool = False):
+    def api_models(request: Request, refresh: bool = False, background: bool = False, owner: str = Depends(get_effective_user)):
         """Get available models — per-user (caller sees only their endpoints +
         legacy/shared null-owner rows). Cached per-user for 30s."""
         # Require auth; "" is the unconfigured single-user mode, treated as
@@ -1469,11 +1469,10 @@ def setup_model_routes(model_discovery):
                     raise HTTPException(403, "API token is not scoped for chat")
                 if not getattr(request.state, "api_token_owner", None):
                     raise HTTPException(403, "API token has no owner")
-            owner = effective_user(request) or ""
 
             # Reject anonymous in configured deployments — no leaking the model
             # list to unauthenticated callers.
-            auth_mgr = getattr(request.app.state, "auth_manager", None)
+            auth_mgr = get_auth_manager(request)
             if not owner and not _auth_disabled() and auth_mgr is not None and getattr(auth_mgr, "is_configured", False):
                 raise HTTPException(401, "Not authenticated")
         except HTTPException:
@@ -1485,7 +1484,7 @@ def setup_model_routes(model_discovery):
         # users get the owner-scoped view.
         _is_admin = False
         try:
-            auth_mgr = getattr(request.app.state, "auth_manager", None)
+            auth_mgr = get_auth_manager(request)
             if owner and auth_mgr is not None and getattr(auth_mgr, "is_admin", None):
                 _is_admin = bool(auth_mgr.is_admin(owner))
         except Exception:
@@ -1515,13 +1514,12 @@ def setup_model_routes(model_discovery):
     _local_probe_inflight: Dict[str, Any] = {"task": None}
 
     @router.get("/model-endpoints/probe-local")
-    async def probe_local_endpoints(request: Request):
+    async def probe_local_endpoints(request: Request, _admin: None = Depends(require_admin)):
         """Fast parallel reachability check for LOCAL endpoints only.
         Cloud endpoints (api.openai.com, api.anthropic.com, etc.) are
         assumed up. Local endpoints get a 1.5s cheap reachability probe so the UI
         can dim stale entries pointing at dead vLLM servers. Returns
         {ep_id: {alive, latency_ms, error}}."""
-        require_admin(request)
         now = _time.time()
         if (_local_probe_cache["data"] is not None and
                 (now - _local_probe_cache["time"]) < _LOCAL_PROBE_TTL):
@@ -1595,9 +1593,8 @@ def setup_model_routes(model_discovery):
                 _local_probe_inflight["task"] = None
 
     @router.get("/ping")
-    def ping_endpoints(request: Request):
+    def ping_endpoints(request: Request, _admin: None = Depends(require_admin)):
         """Probe all enabled endpoints and return status + latency."""
-        require_admin(request)
         db = SessionLocal()
         try:
             endpoints = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).all()
@@ -1635,9 +1632,8 @@ def setup_model_routes(model_discovery):
         return {"endpoints": results}
 
     @router.post("/probe-selected")
-    def probe_selected(request: Request, request_body: dict = Body(...)):
+    def probe_selected(request: Request, request_body: dict = Body(...), _admin: None = Depends(require_admin)):
         """Probe specific models for compare pre-check. Body: {models: [{endpoint_id, model}]}."""
-        require_admin(request)
         models_to_probe = request_body.get("models", [])
         if not models_to_probe:
             return {"results": []}
@@ -1680,9 +1676,8 @@ def setup_model_routes(model_discovery):
             db.close()
 
     @router.get("/probe")
-    def probe_models(request: Request, endpoint_id: Optional[str] = Query(None)):
+    def probe_models(request: Request, endpoint_id: Optional[str] = Query(None), _admin: None = Depends(require_admin)):
         """Probe individual models with a tiny completion request. Streams SSE results."""
-        require_admin(request)
         db = SessionLocal()
         try:
             q = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
@@ -1751,9 +1746,8 @@ def setup_model_routes(model_discovery):
     _PROVIDERS_CACHE_TTL = 30  # seconds
 
     @router.get("/providers")
-    def providers(request: Request, refresh: bool = False):
+    def providers(request: Request, refresh: bool = False, _admin: None = Depends(require_admin)):
         """Get all available providers (cached for 30s)."""
-        require_admin(request)
         now = _time.time()
         if not refresh and _providers_cache["data"] is not None and (now - _providers_cache["time"]) < _PROVIDERS_CACHE_TTL:
             return _providers_cache["data"]
@@ -1763,16 +1757,14 @@ def setup_model_routes(model_discovery):
         return result
 
     @router.get("/discover")
-    def discover_local(request: Request):
+    def discover_local(request: Request, _admin: None = Depends(require_admin)):
         """Scan local network for model servers on common ports."""
-        require_admin(request)
         return model_discovery.discover_models()
 
     # ---- Admin: model endpoints CRUD ----
 
     @router.get("/model-endpoints")
     def list_model_endpoints(request: Request) -> List[Dict[str, Any]]:
-        require_admin(request)
         db = SessionLocal()
         try:
             if _disable_stale_cookbook_local_endpoints(db):
@@ -1836,8 +1828,8 @@ def setup_model_routes(model_discovery):
         # app's historical behaviour). Admins can pass `shared=false` to
         # scope a new endpoint to their own account only.
         shared: str = Form("true"),
+        _admin: None = Depends(require_admin),
     ):
-        require_admin(request)
         base_url = _normalize_base(base_url)
         if not base_url:
             raise HTTPException(400, "Base URL is required")
@@ -2056,8 +2048,8 @@ def setup_model_routes(model_discovery):
         api_key: str = Form(""),
         endpoint_kind: str = Form("auto"),
         model_refresh_timeout: str = Form(""),
+        _admin: None = Depends(require_admin),
     ):
-        require_admin(request)
         base_url = _normalize_base(base_url)
         if not base_url:
             raise HTTPException(400, "Base URL is required")
@@ -2081,9 +2073,8 @@ def setup_model_routes(model_discovery):
         }
 
     @router.get("/model-endpoints/{ep_id}/probe")
-    def probe_endpoint_models(ep_id: str, request: Request):
+    def probe_endpoint_models(ep_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Re-probe all models on an endpoint. Updates hidden_models and streams SSE results."""
-        require_admin(request)
         db = SessionLocal()
         try:
             ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
@@ -2137,9 +2128,9 @@ def setup_model_routes(model_discovery):
         response: Response,
         refresh: bool = False,
         refresh_timeout: Optional[int] = Query(None, ge=1, le=60),
+        _admin: None = Depends(require_admin),
     ):
         """List all discovered models for an endpoint with hidden/visible state."""
-        require_admin(request)
         db = SessionLocal()
         try:
             ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
@@ -2182,7 +2173,7 @@ def setup_model_routes(model_discovery):
             db.close()
 
     @router.patch("/model-endpoints/{ep_id}/models")
-    async def update_hidden_models(ep_id: str, request: Request):
+    async def update_hidden_models(ep_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Bulk update hidden and/or pinned model lists for an endpoint.
 
         Expects JSON body with optional keys:
@@ -2190,7 +2181,6 @@ def setup_model_routes(model_discovery):
         Each key is updated only when present, so callers can patch one list
         without clobbering the other.
         """
-        require_admin(request)
         db = SessionLocal()
         try:
             ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
@@ -2239,7 +2229,7 @@ def setup_model_routes(model_discovery):
         settings = _load_settings()
         _is_admin = False
         try:
-            auth_mgr = getattr(request.app.state, "auth_manager", None)
+            auth_mgr = get_auth_manager(request)
             if _user and auth_mgr is not None and getattr(auth_mgr, "is_admin", None):
                 _is_admin = bool(auth_mgr.is_admin(_user))
         except Exception:
@@ -2331,8 +2321,7 @@ def setup_model_routes(model_discovery):
             db.close()
 
     @router.patch("/model-endpoints/{ep_id}")
-    async def toggle_model_endpoint(ep_id: str, request: Request):
-        require_admin(request)
+    async def toggle_model_endpoint(ep_id: str, request: Request, _admin: None = Depends(require_admin)):
         # Optional JSON body for field-targeted updates. No body → toggle is_enabled (legacy behaviour).
         body: Dict[str, Any] = {}
         try:
@@ -2482,14 +2471,12 @@ def setup_model_routes(model_discovery):
         return cleared
 
     @router.get("/model-endpoints/{ep_id}/dependents")
-    def get_endpoint_dependents(ep_id: str, request: Request):
+    def get_endpoint_dependents(ep_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Check which settings depend on this endpoint."""
-        require_admin(request)
         return {"dependents": _settings_using_endpoint(ep_id)}
 
     @router.delete("/model-endpoints/{ep_id}")
-    def delete_model_endpoint(ep_id: str, request: Request):
-        require_admin(request)
+    def delete_model_endpoint(ep_id: str, request: Request, _admin: None = Depends(require_admin)):
         db = SessionLocal()
         try:
             ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
@@ -2534,9 +2521,8 @@ def setup_model_routes(model_discovery):
         disabled: list = []
 
     @router.post("/tools")
-    def update_tools(body: ToolsUpdate, request: Request):
+    def update_tools(body: ToolsUpdate, request: Request, _admin: None = Depends(require_admin)):
         """Update which tools are disabled."""
-        require_admin(request)
         settings = _load_settings()
         settings["disabled_tools"] = body.disabled
         _save_settings(settings)

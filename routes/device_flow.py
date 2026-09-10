@@ -9,9 +9,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request, Depends
 
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 
 
 @dataclass(frozen=True)
@@ -145,8 +145,7 @@ def create_device_flow_router(
     router = APIRouter(prefix=prefix, tags=list(tags))
 
     @router.post("/device/start")
-    async def device_start(request: Request):
-        require_admin(request)
+    async def device_start(request: Request, _admin: None = Depends(require_admin)):
         form = await request.form()
         start = await _maybe_await(start_flow(request, form))
         interval = int(start.interval or 5)
@@ -157,8 +156,7 @@ def create_device_flow_router(
         return response
 
     @router.post("/device/poll")
-    async def device_poll(request: Request, poll_id: str = Form(...)):
-        require_admin(request)
+    async def device_poll(request: Request, poll_id: str = Form(...), _admin: None = Depends(require_admin)):
         payload = store.get_payload(poll_id)
         if payload is None:
             raise HTTPException(404, "Unknown or expired login session")
@@ -185,8 +183,7 @@ def create_device_flow_router(
         return _pending_response(outcome.detail)
 
     @router.post("/device/cancel")
-    def device_cancel(request: Request, poll_id: str = Form(...)):
-        require_admin(request)
+    def device_cancel(request: Request, poll_id: str = Form(...), _admin: None = Depends(require_admin)):
         store.pop(poll_id)
         return {"status": "cancelled"}
 

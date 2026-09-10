@@ -1,3 +1,4 @@
+from src.auth_dependencies import require_user
 """Editor draft routes — persisted in-progress gallery-editor sessions.
 
 The gallery editor (image canvas) lets users layer edits on top of a
@@ -21,7 +22,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel
 
 from core.database import EditorDraft, SessionLocal
@@ -79,8 +80,7 @@ def setup_editor_draft_routes() -> APIRouter:
     router = APIRouter(tags=["editor-drafts"])
 
     @router.get("/api/editor-drafts")
-    async def list_drafts(request: Request) -> Dict[str, List[Dict[str, Any]]]:
-        user = get_current_user(request)
+    async def list_drafts(request: Request, user: str = Depends(require_user)) -> Dict[str, List[Dict[str, Any]]]:
         db = SessionLocal()
         try:
             q = db.query(EditorDraft).filter(EditorDraft.is_active == True)
@@ -92,8 +92,7 @@ def setup_editor_draft_routes() -> APIRouter:
             db.close()
 
     @router.get("/api/editor-drafts/{draft_id}")
-    async def get_draft(request: Request, draft_id: str) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def get_draft(request: Request, draft_id: str, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             d = db.query(EditorDraft).filter(
@@ -109,8 +108,7 @@ def setup_editor_draft_routes() -> APIRouter:
             db.close()
 
     @router.post("/api/editor-drafts")
-    async def create_draft(request: Request, body: DraftCreate) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def create_draft(request: Request, body: DraftCreate, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             d = EditorDraft(
@@ -135,8 +133,7 @@ def setup_editor_draft_routes() -> APIRouter:
             db.close()
 
     @router.put("/api/editor-drafts/{draft_id}")
-    async def update_draft(request: Request, draft_id: str, body: DraftUpdate) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def update_draft(request: Request, draft_id: str, body: DraftUpdate, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             d = db.query(EditorDraft).filter(
@@ -167,8 +164,7 @@ def setup_editor_draft_routes() -> APIRouter:
             db.close()
 
     @router.delete("/api/editor-drafts/{draft_id}")
-    async def delete_draft(request: Request, draft_id: str) -> Dict[str, str]:
-        user = get_current_user(request)
+    async def delete_draft(request: Request, draft_id: str, user: str = Depends(require_user)) -> Dict[str, str]:
         db = SessionLocal()
         try:
             d = db.query(EditorDraft).filter(EditorDraft.id == draft_id).first()

@@ -1,10 +1,11 @@
+from src.auth_dependencies import require_user
 # routes/compare_routes.py
 """Model A/B comparison routes."""
 import json
 import uuid
 import random
 from datetime import datetime
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request, Depends
 from typing import List
 from pydantic import BaseModel
 import logging
@@ -239,9 +240,9 @@ def setup_compare_routes(session_manager: SessionManager):
         request: Request,
         comp_id: str,
         winner: str = Form(...),  # "left", "right", or "tie"
+        user: str = Depends(require_user),
     ):
         """Record the user's vote and reveal model names if blind."""
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             comp = db.query(Comparison).filter(Comparison.id == comp_id).first()
@@ -281,9 +282,8 @@ def setup_compare_routes(session_manager: SessionManager):
             db.close()
 
     @router.post("/record")
-    def record_comparison(request: Request, body: RecordVoteRequest):
+    def record_comparison(request: Request, body: RecordVoteRequest, user: str = Depends(require_user)):
         """Lightweight endpoint to record a comparison vote from the frontend."""
-        user = get_current_user(request)
         comp_id = str(uuid.uuid4())
 
         model_a = body.models[0] if len(body.models) > 0 else ""
@@ -318,9 +318,8 @@ def setup_compare_routes(session_manager: SessionManager):
         return {"status": "ok", "id": comp_id}
 
     @router.get("/history")
-    def list_comparisons(request: Request):
+    def list_comparisons(request: Request, user: str = Depends(require_user)):
         """List past comparisons."""
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             q = db.query(Comparison)
@@ -344,9 +343,8 @@ def setup_compare_routes(session_manager: SessionManager):
             db.close()
 
     @router.delete("/{comp_id}")
-    def delete_comparison(request: Request, comp_id: str):
+    def delete_comparison(request: Request, comp_id: str, user: str = Depends(require_user)):
         """Delete a comparison and its ephemeral sessions."""
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             comp = db.query(Comparison).filter(Comparison.id == comp_id).first()

@@ -12,10 +12,10 @@ import shutil
 import asyncio
 from pathlib import Path
 from datetime import datetime
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 from core.platform_compat import IS_WINDOWS, safe_chmod, which_tool
 from src.constants import VAULT_FILE as _VAULT_FILE
 
@@ -127,9 +127,8 @@ def setup_vault_routes():
     router = APIRouter(prefix="/api/vault", tags=["vault"])
 
     @router.get("/config")
-    async def get_config(request: Request):
+    async def get_config(request: Request, _admin: None = Depends(require_admin)):
         """Return vault config (no sensitive fields)."""
-        require_admin(request)
         cfg = _load_config()
         return {
             "server_url": cfg.get("server_url", ""),
@@ -140,9 +139,8 @@ def setup_vault_routes():
         }
 
     @router.post("/config")
-    async def save_config(req: VaultConfig, request: Request):
+    async def save_config(req: VaultConfig, request: Request, _admin: None = Depends(require_admin)):
         """Save vault URL + email. Runs 'bw config server' to point at Vaultwarden."""
-        require_admin(request)
         cfg = _load_config()
         cfg["server_url"] = req.server_url.strip().rstrip("/")
         cfg["email"] = req.email.strip()
@@ -156,9 +154,8 @@ def setup_vault_routes():
         return {"ok": True}
 
     @router.post("/login")
-    async def login(req: VaultLoginRequest, request: Request):
+    async def login(req: VaultLoginRequest, request: Request, _admin: None = Depends(require_admin)):
         """Log in to Vaultwarden (required once per account)."""
-        require_admin(request)
         cfg = _load_config()
         # Update email
         cfg["email"] = req.email
@@ -181,9 +178,8 @@ def setup_vault_routes():
         return {"ok": True}
 
     @router.post("/unlock")
-    async def unlock(req: VaultUnlockRequest, request: Request):
+    async def unlock(req: VaultUnlockRequest, request: Request, _admin: None = Depends(require_admin)):
         """Unlock the vault and save the session key."""
-        require_admin(request)
         # Pass the master password on stdin, not argv. argv is visible through
         # `ps` / /proc/<pid>/cmdline; stdin also avoids leaving the secret in
         # the child process environment.
@@ -203,9 +199,8 @@ def setup_vault_routes():
         return {"ok": True, "message": "Vault unlocked"}
 
     @router.post("/lock")
-    async def lock(request: Request):
+    async def lock(request: Request, _admin: None = Depends(require_admin)):
         """Lock the vault (clear session from config)."""
-        require_admin(request)
         cfg = _load_config()
         cfg.pop("session", None)
         cfg.pop("unlocked_at", None)
@@ -215,9 +210,8 @@ def setup_vault_routes():
         return {"ok": True, "message": "Vault locked"}
 
     @router.post("/logout")
-    async def logout(request: Request):
+    async def logout(request: Request, _admin: None = Depends(require_admin)):
         """Log out of the Bitwarden CLI completely."""
-        require_admin(request)
         await _run_bw(["logout"])
         cfg = _load_config()
         cfg.pop("session", None)

@@ -1,3 +1,4 @@
+from src.auth_dependencies import require_user, get_auth_manager
 """
 email_helpers.py
 
@@ -30,7 +31,7 @@ from email import encoders
 import mimetypes
 from pathlib import Path
 
-from fastapi import Query, HTTPException, Request
+from fastapi import Query, HTTPException, Request, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -287,7 +288,7 @@ def _apply_email_style_mechanics(text: str) -> str:
     )
 
 
-def _require_auth(request: Request) -> str:
+def _require_auth(request: Request, u: str = Depends(require_user)) -> str:
     """Defense-in-depth: reject unauthenticated callers even if upstream
     middleware was bypassed (e.g. localhost-bypass, SSRF from a sibling
     service). Mirrors core.middleware.require_admin's resolution path.
@@ -298,12 +299,11 @@ def _require_auth(request: Request) -> str:
     unconfigured mode are only honoured if they're coming from
     localhost; everyone else gets 401.
     """
-    u = get_current_user(request)
     if u:
         return u
     if _auth_disabled():
         return ""
-    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    auth_mgr = get_auth_manager(request)
     if auth_mgr is not None and getattr(auth_mgr, "is_configured", False):
         raise HTTPException(401, "Not authenticated")
     # Unconfigured / first-run mode: only allow loopback callers. Public

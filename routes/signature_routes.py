@@ -1,3 +1,4 @@
+from src.auth_dependencies import require_user
 """Signature routes — CRUD for the user's saved visual signatures.
 
 Signatures are reusable image stamps (drawn once, applied to many things):
@@ -12,7 +13,7 @@ import re
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel
 
 from core.database import SessionLocal, Signature
@@ -84,8 +85,7 @@ def setup_signature_routes() -> APIRouter:
     router = APIRouter(tags=["signatures"])
 
     @router.get("/api/signatures")
-    async def list_signatures(request: Request) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def list_signatures(request: Request, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             q = db.query(Signature)
@@ -99,8 +99,7 @@ def setup_signature_routes() -> APIRouter:
             db.close()
 
     @router.post("/api/signatures")
-    async def create_signature(request: Request, req: SignatureCreate) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def create_signature(request: Request, req: SignatureCreate, user: str = Depends(require_user)) -> Dict[str, Any]:
         b64 = _normalize_signature_png(req.data)
         width = _signature_dimension(req.width)
         height = _signature_dimension(req.height)
@@ -128,8 +127,7 @@ def setup_signature_routes() -> APIRouter:
             db.close()
 
     @router.delete("/api/signatures/{sig_id}")
-    async def delete_signature(sig_id: str, request: Request) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def delete_signature(sig_id: str, request: Request, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             sig = db.query(Signature).filter(Signature.id == sig_id).first()

@@ -1,3 +1,4 @@
+from src.auth_dependencies import get_effective_user, get_auth_manager
 """Chat routes — /api/chat, /api/chat_stream, /api/inject_context, /api/search."""
 
 import asyncio
@@ -9,7 +10,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, AsyncGenerator, List, Optional
 
-from fastapi import APIRouter, Request, HTTPException, Form, Query
+from fastapi import APIRouter, Request, HTTPException, Form, Query, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
@@ -585,7 +586,7 @@ def setup_chat_routes(
     # POST /api/chat (non-streaming)
     # ------------------------------------------------------------------ #
     @router.post("/api/chat", response_model=Dict[str, str])
-    async def chat_endpoint(request: Request, chat_request: ChatRequest) -> Dict[str, str]:
+    async def chat_endpoint(request: Request, chat_request: ChatRequest, owner: str = Depends(get_effective_user)) -> Dict[str, str]:
         _set_user_time_from_request(request)
 
         message = chat_request.message
@@ -604,7 +605,6 @@ def setup_chat_routes(
             sess = session_manager.get_session(session)
         except KeyError:
             raise HTTPException(404, f"Session '{session}' not found")
-        owner = effective_user(request)
         if _clear_orphaned_session_endpoint(sess, owner=owner):
             raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
 
@@ -695,7 +695,7 @@ def setup_chat_routes(
     # POST /api/chat_stream
     # ------------------------------------------------------------------ #
     @router.post("/api/chat_stream")
-    async def chat_stream(request: Request) -> StreamingResponse:
+    async def chat_stream(request: Request, owner: str = Depends(get_effective_user), auth_manager = Depends(get_auth_manager)) -> StreamingResponse:
         body = None
         try:
             if request.headers.get("content-type", "").startswith("application/json"):
@@ -712,6 +712,12 @@ def setup_chat_routes(
 
         form_data = await request.form()
         message = form_data.get("message")
+        logger.info(
+            "[chat-entry] hit chat route message=%r mode=%r use_web=%r",
+            message[:120] if isinstance(message, str) else message,
+            form_data.get("mode", ""),
+            form_data.get("use_web", ""),
+        )
         session = form_data.get("session")
         attachments = form_data.get("attachments")
         use_web = form_data.get("use_web")
@@ -826,7 +832,7 @@ def setup_chat_routes(
             # missing email just means we pass uid/folder/account only.
             try:
                 from routes.email_routes import _read_cache_get, _read_cache_key
-                _ck = _read_cache_key(active_email_account or None, active_email_folder, active_email_uid, owner=get_current_user(request))
+                _ck = _read_cache_key(active_email_account or None, active_email_folder, active_email_uid, owner=owner)
                 _cached_email = _read_cache_get(_ck)
                 if _cached_email and isinstance(_cached_email, dict):
                     active_email_ctx["subject"] = str(_cached_email.get("subject") or "")
@@ -873,7 +879,6 @@ def setup_chat_routes(
             # but BEFORE loading. Prevents cross-user session hijack.
             _verify_session_owner(request, session)
             sess = session_manager.get_session(session)
-            owner = effective_user(request)
             if _clear_orphaned_session_endpoint(sess, owner=owner):
                 raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
             # Issue #587: picker shows a model from the endpoint cache but
@@ -918,7 +923,7 @@ def setup_chat_routes(
         _enforce_chat_privileges(request, sess)
 
         # Ensure session has auth headers
-        resolve_session_auth(sess, session, owner=effective_user(request))
+        resolve_session_auth(sess, session, owner=owner)
 
         # Check for research_pending BEFORE mode persist overwrites it
         do_research = str(use_research).lower() == "true"
@@ -1115,8 +1120,8 @@ def setup_chat_routes(
         # Enforce per-user privileges
         _privs = {}
         _user = ctx.user
-        if _user and hasattr(request.app.state, 'auth_manager') and request.app.state.auth_manager:
-            _privs = request.app.state.auth_manager.get_privileges(_user)
+        if _user and auth_manager:
+            _privs = auth_manager.get_privileges(_user)
         if _privs:
             if not _privs.get("can_use_bash", True):
                 disabled_tools.update({"bash", "python", "read_file", "write_file"})
@@ -1876,11 +1881,11 @@ def setup_chat_routes(
         request: Request,
         q: str = Query("", min_length=0),
         limit: int = Query(20, ge=1, le=100),
+        _user: str = Depends(get_effective_user),
     ) -> List[Dict[str, Any]]:
         if not q or not q.strip():
             return []
 
-        _user = effective_user(request)
         return [
             result.to_dict()
             for result in search_session_messages(

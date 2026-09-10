@@ -8,11 +8,11 @@ import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
-from src.auth_helpers import get_current_user, owner_filter, require_privilege
+from src.auth_helpers import get_current_user, owner_filter, get_auth_manager, require_privilege, require_user
 from src.upload_limits import (
     read_upload_limited,
     GALLERY_UPLOAD_MAX_BYTES,
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 def _current_user_is_admin(request: Request, user: str | None) -> bool:
     if not user:
         return False
-    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    auth_mgr = get_auth_manager(request)
     is_admin = getattr(auth_mgr, "is_admin", None)
     if not callable(is_admin):
         return False
@@ -173,7 +173,7 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- POST /api/gallery/upload ----
     @router.post("/api/gallery/upload")
-    async def gallery_upload(request: Request):
+    async def gallery_upload(request: Request, user: str = Depends(require_user)):
         """Upload an image file to the gallery with EXIF extraction and dedup."""
         import uuid
         from pathlib import Path
@@ -183,7 +183,6 @@ def setup_gallery_routes() -> APIRouter:
         if not file or not hasattr(file, 'filename'):
             raise HTTPException(400, "No file provided")
 
-        user = get_current_user(request)
         album_id = form.get("album_id") or None
         content = await read_upload_limited(file, GALLERY_UPLOAD_MAX_BYTES, "Gallery upload")
 
@@ -255,9 +254,8 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- POST /api/gallery/{id}/replace ----
     @router.post("/api/gallery/{image_id}/replace")
-    async def gallery_replace(request: Request, image_id: str):
+    async def gallery_replace(request: Request, image_id: str, user: str = Depends(require_user)):
         """Replace an existing gallery image file with a new one."""
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             img = db.query(GalleryImage).filter(GalleryImage.id == image_id).first()
@@ -298,11 +296,10 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- POST /api/gallery/{image_id}/rename ----
     @router.post("/api/gallery/{image_id}/rename")
-    async def gallery_rename(request: Request, image_id: str):
+    async def gallery_rename(request: Request, image_id: str, user: str = Depends(require_user)):
         """Rename a gallery photo. Stores the new name in the `prompt`
         column (which serves as the user-facing label for uploaded
         photos that have no AI prompt)."""
-        user = get_current_user(request)
         data = await request.json()
         new_name = (data.get("name") or "").strip()
         if not new_name:
@@ -324,7 +321,7 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- POST /api/gallery/{image_id}/rotate ----
     @router.post("/api/gallery/{image_id}/rotate")
-    async def gallery_rotate(request: Request, image_id: str):
+    async def gallery_rotate(request: Request, image_id: str, user: str = Depends(require_user)):
         """Rotate an image by ±90° or 180°. Updates the file on disk and the
         width/height in the DB. Body: {angle: 90 | -90 | 180}."""
         from pathlib import Path
@@ -339,7 +336,6 @@ def setup_gallery_routes() -> APIRouter:
         if angle not in (90, -90, 180, 270):
             raise HTTPException(400, "Angle must be 90, -90, 180, or 270")
 
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             img = db.query(GalleryImage).filter(GalleryImage.id == image_id).first()
@@ -472,9 +468,8 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- GET /api/gallery/tags ----
     @router.get("/api/gallery/tags")
-    async def gallery_tags(request: Request) -> Dict[str, Any]:
+    async def gallery_tags(request: Request, user: str = Depends(require_user)) -> Dict[str, Any]:
         """Return distinct tags across all active gallery images."""
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             q = db.query(GalleryImage.tags).filter(
@@ -505,8 +500,8 @@ def setup_gallery_routes() -> APIRouter:
         seed: Optional[int] = Query(None),
         offset: int = Query(0, ge=0),
         limit: int = Query(24, ge=1, le=100),
+        user: str = Depends(require_user),
     ) -> Dict[str, Any]:
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             # Distinct tags for filter UI
@@ -633,8 +628,7 @@ def setup_gallery_routes() -> APIRouter:
     # ---- Album CRUD (must be before {image_id} catch-all) ----
 
     @router.get("/api/gallery/albums")
-    async def list_albums(request: Request):
-        user = get_current_user(request)
+    async def list_albums(request: Request, user: str = Depends(require_user)):
         db = SessionLocal()
         try:
             q = db.query(GalleryAlbum)
@@ -671,9 +665,8 @@ def setup_gallery_routes() -> APIRouter:
             db.close()
 
     @router.post("/api/gallery/albums")
-    async def create_album(request: Request):
+    async def create_album(request: Request, user: str = Depends(require_user)):
         import uuid
-        user = get_current_user(request)
         data = await request.json()
         name = (data.get("name") or "").strip()
         if not name:
@@ -692,8 +685,7 @@ def setup_gallery_routes() -> APIRouter:
             db.close()
 
     @router.get("/api/gallery/stats")
-    async def gallery_stats(request: Request):
-        user = get_current_user(request)
+    async def gallery_stats(request: Request, user: str = Depends(require_user)):
         db = SessionLocal()
         try:
             from sqlalchemy import func
@@ -722,8 +714,8 @@ def setup_gallery_routes() -> APIRouter:
         request: Request,
         album_id: Optional[str] = Query(None),
         limit: int = Query(200),
+        user: str = Depends(require_user),
     ):
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(
@@ -741,8 +733,7 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- GET /api/gallery/{image_id} ----
     @router.get("/api/gallery/{image_id}")
-    async def get_gallery_image(request: Request, image_id: str) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def get_gallery_image(request: Request, image_id: str, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             row = (
@@ -762,8 +753,7 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- PATCH /api/gallery/{image_id} ----
     @router.patch("/api/gallery/{image_id}")
-    async def patch_gallery_image(request: Request, image_id: str, req: GalleryPatch) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def patch_gallery_image(request: Request, image_id: str, req: GalleryPatch, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             img = db.query(GalleryImage).filter(GalleryImage.id == image_id).first()
@@ -814,10 +804,7 @@ def setup_gallery_routes() -> APIRouter:
     # gallery's bulk "Download" when many photos are selected (one file instead
     # of a flood of individual downloads).
     @router.post("/api/gallery/download-zip")
-    async def gallery_download_zip(request: Request):
-        user = get_current_user(request)
-        if not user:
-            raise HTTPException(401, "Not authenticated")
+    async def gallery_download_zip(request: Request, user: str = Depends(require_user)):
         try:
             data = await request.json()
         except Exception:
@@ -869,8 +856,7 @@ def setup_gallery_routes() -> APIRouter:
     # Leaves `ai_tags` intact. Use after a bug populated user-tags with
     # AI-suggested values you never added.
     @router.post("/api/gallery/clear-user-tags")
-    async def clear_gallery_user_tags(request: Request) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def clear_gallery_user_tags(request: Request, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(GalleryImage.is_active == True)
@@ -894,8 +880,7 @@ def setup_gallery_routes() -> APIRouter:
     # Leaves user `tags` intact. Use when AI-suggested tags like "dog" /
     # "woman" have leaked into the gallery and you want them gone.
     @router.post("/api/gallery/clear-ai-tags")
-    async def clear_gallery_ai_tags(request: Request, image_id: Optional[str] = Query(None)) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def clear_gallery_ai_tags(request: Request, image_id: Optional[str] = Query(None), user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(GalleryImage.is_active == True)
@@ -921,8 +906,7 @@ def setup_gallery_routes() -> APIRouter:
     # tag from `tags` that also appears in `ai_tags` (case-insensitive).
     # Returns how many rows were touched + how many tags removed.
     @router.post("/api/gallery/dedupe-tags")
-    async def dedupe_gallery_tags(request: Request) -> Dict[str, Any]:
-        user = get_current_user(request)
+    async def dedupe_gallery_tags(request: Request, user: str = Depends(require_user)) -> Dict[str, Any]:
         db = SessionLocal()
         try:
             q = db.query(GalleryImage).filter(GalleryImage.is_active == True)
@@ -957,8 +941,7 @@ def setup_gallery_routes() -> APIRouter:
 
     # ---- DELETE /api/gallery/{image_id} ----
     @router.delete("/api/gallery/{image_id}")
-    async def delete_gallery_image(request: Request, image_id: str) -> Dict[str, str]:
-        user = get_current_user(request)
+    async def delete_gallery_image(request: Request, image_id: str, user: str = Depends(require_user)) -> Dict[str, str]:
         db = SessionLocal()
         try:
             img = db.query(GalleryImage).filter(GalleryImage.id == image_id).first()
@@ -1766,8 +1749,7 @@ def setup_gallery_routes() -> APIRouter:
         return img
 
     @router.put("/api/gallery/albums/{album_id}")
-    async def update_album(request: Request, album_id: str):
-        user = get_current_user(request)
+    async def update_album(request: Request, album_id: str, user: str = Depends(require_user)):
         data = await request.json()
         db = SessionLocal()
         try:
@@ -1787,8 +1769,7 @@ def setup_gallery_routes() -> APIRouter:
             db.close()
 
     @router.delete("/api/gallery/albums/{album_id}")
-    async def delete_album(request: Request, album_id: str):
-        user = get_current_user(request)
+    async def delete_album(request: Request, album_id: str, user: str = Depends(require_user)):
         db = SessionLocal()
         try:
             album = _get_or_404_album(db, album_id, user)
@@ -1803,8 +1784,7 @@ def setup_gallery_routes() -> APIRouter:
             db.close()
 
     @router.post("/api/gallery/albums/{album_id}/add")
-    async def add_to_album(request: Request, album_id: str):
-        user = get_current_user(request)
+    async def add_to_album(request: Request, album_id: str, user: str = Depends(require_user)):
         data = await request.json()
         ids = data.get("image_ids", [])
         db = SessionLocal()
@@ -1821,8 +1801,7 @@ def setup_gallery_routes() -> APIRouter:
             db.close()
 
     @router.post("/api/gallery/albums/{album_id}/remove")
-    async def remove_from_album(request: Request, album_id: str):
-        user = get_current_user(request)
+    async def remove_from_album(request: Request, album_id: str, user: str = Depends(require_user)):
         data = await request.json()
         ids = data.get("image_ids", [])
         db = SessionLocal()
@@ -1842,8 +1821,7 @@ def setup_gallery_routes() -> APIRouter:
     # ---- Favorite toggle ----
 
     @router.post("/api/gallery/{image_id}/favorite")
-    async def toggle_favorite(request: Request, image_id: str):
-        user = get_current_user(request)
+    async def toggle_favorite(request: Request, image_id: str, user: str = Depends(require_user)):
         db = SessionLocal()
         try:
             img = _get_or_404_image(db, image_id, user)
@@ -1856,12 +1834,11 @@ def setup_gallery_routes() -> APIRouter:
     # ---- AI auto-tag ----
 
     @router.post("/api/gallery/{image_id}/ai-tag")
-    async def ai_tag_image(request: Request, image_id: str):
+    async def ai_tag_image(request: Request, image_id: str, user: str = Depends(require_user)):
         """Send image to vision model for auto-tagging."""
         import base64, httpx
         from pathlib import Path
 
-        user = get_current_user(request)
         db = SessionLocal()
         try:
             img = _get_or_404_image(db, image_id, user)

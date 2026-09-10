@@ -13,12 +13,12 @@ from typing import List, Optional
 
 import httpx
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
 from services.memory.skills import SkillsManager
 from src.auth_helpers import get_current_user
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -1214,11 +1214,10 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         }
 
     @router.put("/builtin/{name}")
-    async def set_builtin_override(name: str, request: Request):
+    async def set_builtin_override(name: str, request: Request, _admin: None = Depends(require_admin)):
         """Save a user override for a built-in tool's instruction block.
         WARNING surfaced in the UI — this changes how the assistant is
         told to use a native tool."""
-        require_admin(request)
         from src.agent_loop import TOOL_SECTIONS
         valid = set()
         for key in TOOL_SECTIONS:
@@ -1240,9 +1239,8 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         return {"ok": True, "name": name, "is_overridden": True}
 
     @router.delete("/builtin/{name}")
-    async def reset_builtin_override(name: str, request: Request):
+    async def reset_builtin_override(name: str, request: Request, _admin: None = Depends(require_admin)):
         """Revert a built-in tool to its shipped instruction block."""
-        require_admin(request)
         from src.settings import load_settings, save_settings
         settings = load_settings()
         ov = settings.get("builtin_tool_overrides")
@@ -1253,9 +1251,8 @@ def setup_skills_routes(skills_manager: SkillsManager) -> APIRouter:
         return {"ok": True, "name": name, "is_overridden": False}
 
     @router.post("/import-from-url")
-    async def import_skill_from_url(request: Request, body: SkillImportUrlRequest):
+    async def import_skill_from_url(request: Request, body: SkillImportUrlRequest, _admin: None = Depends(require_admin)):
         """Install a SKILL.md bundle from a public GitHub URL (skills.sh links supported)."""
-        require_admin(request)
         user = _owner(request)
         from services.memory.skill_importer import (
             SkillImportError,

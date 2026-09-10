@@ -1,3 +1,4 @@
+from src.auth_dependencies import get_effective_user
 """Preset routes — /api/presets GET, /api/presets/custom POST, user templates CRUD."""
 
 import asyncio
@@ -9,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
 from src.request_models import PresetUpdateRequest
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 from src.auth_helpers import effective_user
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ def setup_preset_routes(preset_manager) -> APIRouter:
         return {"success": False, "message": "Failed to delete template"}
 
     @router.post("/api/presets/expand")
-    async def expand_character_prompt(request: Request) -> Dict[str, Any]:
+    async def expand_character_prompt(request: Request, user: str = Depends(get_effective_user)) -> Dict[str, Any]:
         """Use AI to expand a rough character description into a full system prompt."""
         from src.ai_interaction import _resolve_model
         from src.llm_core import llm_call_async
@@ -102,7 +103,6 @@ def setup_preset_routes(preset_manager) -> APIRouter:
 
         try:
             model_spec = data.get("model") or ""
-            user = effective_user(request)
             url, model, headers = await asyncio.to_thread(_resolve_model, model_spec, owner=user)
             result = await llm_call_async(url, model, messages, temperature=0.8, max_tokens=500, headers=headers)
             return {"success": True, "prompt": result.strip()}

@@ -1,7 +1,8 @@
+from src.auth_dependencies import require_user
 # routes/cleanup_routes.py
 """Routes for cleanup operations."""
 import logging
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from src.cleanup_service import get_cleanup_preview, cleanup_sessions
 from src.auth_helpers import get_current_user
 
@@ -20,14 +21,13 @@ def setup_cleanup_routes(session_manager):
     router = APIRouter(prefix="/api/cleanup")
 
     @router.get("/preview")
-    async def cleanup_preview(request: Request):
+    async def cleanup_preview(request: Request, user: str = Depends(require_user)):
         """
         Preview what would be cleaned up without making any changes.
 
         Returns:
             JSON response with lists of sessions that would be archived/deleted and estimated space savings
         """
-        user = get_current_user(request)
         try:
             preview = await get_cleanup_preview(owner=user)
             return preview
@@ -36,7 +36,7 @@ def setup_cleanup_routes(session_manager):
             raise HTTPException(500, "Cleanup preview generation failed")
 
     @router.post("")
-    async def cleanup_endpoint(request: Request):
+    async def cleanup_endpoint(request: Request, user: str = Depends(require_user)):
         """
         Perform cleanup operations:
         1. Archive inactive sessions (not accessed for 7 days)
@@ -45,7 +45,6 @@ def setup_cleanup_routes(session_manager):
         Returns:
             JSON response with counts of deleted and archived sessions, and space freed
         """
-        user = get_current_user(request)
         try:
             archived_count, deleted_count, space_freed_mb = await cleanup_sessions(session_manager, owner=user)
             return {

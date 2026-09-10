@@ -1,8 +1,9 @@
+from src.auth_dependencies import require_user
 """User preferences API — per-user key/value store backed by a JSON file."""
 import json
 import os
 from typing import Optional
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from src.auth_helpers import get_current_user
 from src.constants import USER_PREFS_FILE
 
@@ -70,19 +71,16 @@ def setup_prefs_routes():
     router = APIRouter(prefix="/api/prefs", tags=["preferences"])
 
     @router.get("")
-    async def get_all_prefs(request: Request):
-        user = get_current_user(request)
+    async def get_all_prefs(request: Request, user: str = Depends(require_user)):
         return _load_for_user(user)
 
     @router.get("/{key}")
-    async def get_pref(request: Request, key: str):
-        user = get_current_user(request)
+    async def get_pref(request: Request, key: str, user: str = Depends(require_user)):
         prefs = _load_for_user(user)
         return {"key": key, "value": prefs.get(key)}
 
     @router.put("/{key}")
-    async def set_pref(request: Request, key: str, body: dict):
-        user = get_current_user(request)
+    async def set_pref(request: Request, key: str, body: dict, user: str = Depends(require_user)):
         prefs = _load_for_user(user)
         prefs[key] = body.get("value")
         _save_for_user(user, prefs)

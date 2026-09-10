@@ -81,9 +81,6 @@ def setup_assistant_routes(task_scheduler) -> APIRouter:
     router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
     def _owner(request: Request) -> str:
-        owner = get_current_user(request)
-        if not owner:
-            raise HTTPException(status_code=401, detail="Not authenticated")
         return owner
 
     # Synthetic / non-human owners that should NEVER get an assistant +

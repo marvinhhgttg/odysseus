@@ -22,7 +22,7 @@ import html
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 from src.auth_helpers import get_current_user
 
 from companion import pairing as _pairing

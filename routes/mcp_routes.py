@@ -6,13 +6,13 @@ import uuid
 import urllib.parse
 import html
 from pathlib import Path
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse
 import logging
 import httpx
 
 from core.database import McpServer, SessionLocal
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 from src.constants import DATA_DIR, MCP_OAUTH_DIR
 from src.mcp_manager import McpManager
 
@@ -118,9 +118,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
     """Setup MCP routes with the provided manager."""
 
     @router.get("/servers")
-    def list_servers(request: Request):
+    def list_servers(request: Request, _admin: None = Depends(require_admin)):
         """List all configured MCP servers with connection status."""
-        require_admin(request)
         db = SessionLocal()
         try:
             servers = db.query(McpServer).all()
@@ -166,11 +165,11 @@ def setup_mcp_routes(mcp_manager: McpManager):
         url: str = Form(None),
         oauth_file: str = Form(None),
         oauth_config: str = Form(None),
+        _admin: None = Depends(require_admin),
     ):
         """Add a new MCP server config and attempt connection. Admin-only:
         registering a stdio server is equivalent to executing arbitrary
         binaries on the host."""
-        require_admin(request)
         server_id = str(uuid.uuid4())[:8]
 
         # Validate
@@ -285,9 +284,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
         }
 
     @router.post("/servers/{server_id}/reconnect")
-    async def reconnect_server(server_id: str, request: Request):
+    async def reconnect_server(server_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Reconnect to an MCP server."""
-        require_admin(request)
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()
@@ -321,9 +319,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
             db.close()
 
     @router.patch("/servers/{server_id}")
-    async def toggle_server(server_id: str, request: Request, is_enabled: str = Form(...)):
+    async def toggle_server(server_id: str, request: Request, is_enabled: str = Form(...), _admin: None = Depends(require_admin)):
         """Enable or disable an MCP server."""
-        require_admin(request)
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()
@@ -354,9 +351,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
             db.close()
 
     @router.delete("/servers/{server_id}")
-    async def delete_server(server_id: str, request: Request):
+    async def delete_server(server_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Remove an MCP server."""
-        require_admin(request)
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()
@@ -372,16 +368,14 @@ def setup_mcp_routes(mcp_manager: McpManager):
             db.close()
 
     @router.get("/tools")
-    def list_tools(request: Request):
+    def list_tools(request: Request, _admin: None = Depends(require_admin)):
         """List all discovered MCP tools across all connected servers."""
-        require_admin(request)
         disabled_map = _load_disabled_map()
         return mcp_manager.get_all_tools(disabled_map)
 
     @router.get("/servers/{server_id}/tools")
-    def list_server_tools(server_id: str, request: Request):
+    def list_server_tools(server_id: str, request: Request, _admin: None = Depends(require_admin)):
         """List all tools for a specific MCP server with enabled/disabled state."""
-        require_admin(request)
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()
@@ -399,12 +393,11 @@ def setup_mcp_routes(mcp_manager: McpManager):
         return server_tools
 
     @router.patch("/servers/{server_id}/tools")
-    async def update_disabled_tools(server_id: str, request: Request):
+    async def update_disabled_tools(server_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Bulk update disabled tools list for a server.
 
         Expects JSON body: {"disabled": ["tool_name_1", "tool_name_2"]}
         """
-        require_admin(request)
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()
@@ -426,9 +419,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
     # ── OAuth flow for Google MCP servers ──────────────────────────
 
     @router.get("/oauth/authorize/{server_id}")
-    def oauth_authorize(server_id: str, request: Request):
+    def oauth_authorize(server_id: str, request: Request, _admin: None = Depends(require_admin)):
         """Show OAuth authorization page with Google sign-in link."""
-        require_admin(request)
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()
@@ -480,10 +472,9 @@ def setup_mcp_routes(mcp_manager: McpManager):
             db.close()
 
     @router.get("/oauth/callback")
-    async def oauth_callback(code: str, state: str, request: Request):
+    async def oauth_callback(code: str, state: str, request: Request, _admin: None = Depends(require_admin)):
         """Handle OAuth callback. Generic MCP OAuth flows resolve via the
         pending-state registry; Google flows fall through to the legacy path."""
-        require_admin(request)
         from src.mcp_oauth import resolve_pending
         if resolve_pending(state, code):
             return HTMLResponse(_oauth_result_page(
@@ -495,9 +486,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
         return await _exchange_and_connect(state, code, request)
 
     @router.post("/oauth/exchange/{server_id}")
-    async def oauth_exchange(server_id: str, request: Request, callback_url: str = Form(...)):
+    async def oauth_exchange(server_id: str, request: Request, callback_url: str = Form(...), _admin: None = Depends(require_admin)):
         """Manual code exchange — user pastes the callback URL from their browser."""
-        require_admin(request)
         try:
             parsed = urllib.parse.urlparse(callback_url)
             params = urllib.parse.parse_qs(parsed.query)

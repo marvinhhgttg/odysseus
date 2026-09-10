@@ -1,3 +1,4 @@
+from src.auth_dependencies import require_user, get_auth_manager
 """Research background task routes — /api/research/*."""
 
 import asyncio
@@ -9,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from core.middleware import INTERNAL_TOOL_USER
@@ -214,7 +215,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         data isn't owner-scoped in the on-disk JSON yet, so we at least
         block anonymous access. Multi-tenant deploys should additionally
         verify the session belongs to this user."""
-        user = get_current_user(request)
+        user = require_user(request)
         if not user:
             if _auth_disabled():
                 return ""
@@ -497,7 +498,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         if user == INTERNAL_TOOL_USER:
             tool_owner = (request.headers.get("X-Odysseus-Owner") or "").strip()
             if tool_owner and tool_owner not in RESERVED_USERNAMES:
-                auth_mgr = getattr(request.app.state, "auth_manager", None)
+                auth_mgr = get_auth_manager(request)
                 if auth_mgr is not None and getattr(auth_mgr, "is_configured", False):
                     try:
                         privs = auth_mgr.get_privileges(tool_owner) or {}

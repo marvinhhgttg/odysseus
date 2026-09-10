@@ -6,10 +6,10 @@ import asyncio
 import shutil
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Request, File, UploadFile, HTTPException, Form
+from fastapi import APIRouter, Request, File, UploadFile, HTTPException, Form, Depends
 from typing import List, Optional
 import logging
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin, get_effective_user, get_auth_manager
 from core.database import SessionLocal, GalleryImage, Session as DbSession
 from src.auth_helpers import effective_user
 from src.constants import GENERATED_IMAGES_DIR
@@ -135,6 +135,7 @@ def setup_upload_routes(upload_handler):
         request: Request,
         files: List[UploadFile] = File(...),
         session_id: Optional[str] = Form(None),
+        owner: str = Depends(get_effective_user),
     ):
         """Upload files with enhanced security and organization."""
         if not isinstance(session_id, str):
@@ -163,7 +164,6 @@ def setup_upload_routes(upload_handler):
         
         for u in files:
             try:
-                owner = effective_user(request)
                 meta = upload_handler.save_upload(u, client_ip, owner=owner)
                 gallery_id = _promote_chat_image_to_gallery(meta, owner, session_id)
                 item = {
@@ -192,16 +192,14 @@ def setup_upload_routes(upload_handler):
         return {"files": out}
     
     @router.post("/cleanup")
-    async def manual_cleanup(request: Request):
+    async def manual_cleanup(request: Request, _admin: None = Depends(require_admin)):
         """Manually trigger cleanup of old uploads."""
-        require_admin(request)
         cleaned_count = upload_handler.cleanup_old_uploads()
         return {"status": "success", "files_cleaned": cleaned_count}
 
     @router.get("/stats")
-    async def upload_stats(request: Request):
+    async def upload_stats(request: Request, _admin: None = Depends(require_admin)):
         """Get statistics about uploaded files."""
-        require_admin(request)
         try:
             return upload_handler.get_upload_stats()
         except Exception as e:
@@ -209,7 +207,7 @@ def setup_upload_routes(upload_handler):
             raise HTTPException(500, "Failed to get upload statistics")
 
     @router.get("/{file_id}")
-    async def download_file(request: Request, file_id: str, thumb: int = 0):
+    async def download_file(request: Request, file_id: str, thumb: int = 0, current_user: str = Depends(get_effective_user)):
         """Serve an uploaded file by its ID. `?thumb=1` returns a small cached
         JPEG thumbnail for images (used by chat attachment previews) so the
         client isn't downloading the full-resolution photo just to show it tiny."""
@@ -225,9 +223,8 @@ def setup_upload_routes(upload_handler):
         info = next((fi for fi in db.values() if fi.get("id") == file_id), None)
         if info:
             original_name = info.get("name", file_id)
-        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        auth_mgr = get_auth_manager(request)
         auth_configured = bool(auth_mgr and auth_mgr.is_configured)
-        current_user = effective_user(request)
         file_owner = info.get("owner") if info else None
         if auth_configured:
             if not current_user:
@@ -307,16 +304,15 @@ def setup_upload_routes(upload_handler):
             db.close()
 
     @router.get("/{file_id}/vision")
-    async def get_vision_text(request: Request, file_id: str, force: int = 0):
+    async def get_vision_text(request: Request, file_id: str, force: int = 0, current_user: str = Depends(get_effective_user)):
         """Return the vision-model OCR/description for an uploaded image.
         Cached under UPLOAD_DIR/.vision/{file_id}.txt — first call computes,
         subsequent loads are instant. Pass force=1 to recompute."""
         if not upload_handler.validate_upload_id(file_id):
             raise HTTPException(400, "Invalid file ID")
         info = _load_upload_info(file_id)
-        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        auth_mgr = get_auth_manager(request)
         auth_configured = bool(auth_mgr and auth_mgr.is_configured)
-        current_user = effective_user(request)
         file_owner = info.get("owner") if info else None
         if auth_configured:
             if not current_user:
@@ -352,7 +348,7 @@ def setup_upload_routes(upload_handler):
         return {"text": text, "cached": False}
 
     @router.put("/{file_id}/vision")
-    async def put_vision_text(request: Request, file_id: str):
+    async def put_vision_text(request: Request, file_id: str, current_user: str = Depends(get_effective_user)):
         """Persist a user-edited vision/OCR text for an attachment. Stored in
         the same cache file so the chat send picks it up as the override."""
         if not upload_handler.validate_upload_id(file_id):
@@ -360,9 +356,8 @@ def setup_upload_routes(upload_handler):
         info = _load_upload_info(file_id)
         if not info:
             raise HTTPException(404, "File not found")
-        auth_mgr = getattr(request.app.state, "auth_manager", None)
+        auth_mgr = get_auth_manager(request)
         auth_configured = bool(auth_mgr and auth_mgr.is_configured)
-        current_user = effective_user(request)
         file_owner = info.get("owner")
         if auth_configured:
             if not current_user:

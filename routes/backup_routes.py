@@ -4,8 +4,8 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from core.middleware import require_admin
+from fastapi import APIRouter, HTTPException, Request, Response, Depends
+from src.auth_dependencies import require_admin, require_user
 from src.auth_helpers import get_current_user
 from src.settings import load_settings, save_settings, load_features, save_features
 
@@ -16,10 +16,8 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
     router = APIRouter(tags=["backup"])
 
     @router.get("/api/export")
-    async def export_data(request: Request):
+    async def export_data(request: Request, _admin: None = Depends(require_admin), user: str = Depends(require_user)):
         """Export all user data as a downloadable JSON file."""
-        require_admin(request)
-        user = get_current_user(request)
 
         # Memories (filtered by owner when auth is enabled)
         memories = memory_manager.load(owner=user)
@@ -60,10 +58,8 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
         )
 
     @router.post("/api/import")
-    async def import_data(request: Request):
+    async def import_data(request: Request, _admin: None = Depends(require_admin), user: str = Depends(require_user)):
         """Import user data from a previously exported JSON file. Merges with existing data."""
-        require_admin(request)
-        user = get_current_user(request)
         try:
             body = await request.json()
         except Exception:

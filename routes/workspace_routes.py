@@ -1,6 +1,7 @@
+from src.auth_dependencies import require_user
 """Workspace API - browse server directories to pick a tool workspace folder."""
 import os
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, Request, HTTPException, Query, Depends
 
 from src.auth_helpers import get_current_user
 from src.tool_security import owner_is_admin_or_single_user
@@ -15,7 +16,7 @@ def setup_workspace_routes():
     router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 
     @router.get("/browse")
-    def browse(request: Request, path: str = Query(default="")):
+    def browse(request: Request, path: str = Query(default=""), owner: str = Depends(require_user)):
         """List subdirectories of `path` (default: home) so the UI can navigate
         the server filesystem and pick a workspace folder. Directories only.
 
@@ -24,7 +25,6 @@ def setup_workspace_routes():
         NON_ADMIN_BLOCKED_TOOLS). A non-admin who can't use those tools must not
         be able to map the host's directory tree either.
         """
-        owner = get_current_user(request)
         if not owner_is_admin_or_single_user(owner):
             raise HTTPException(status_code=403, detail="Workspace browsing is admin-only")
 
@@ -66,7 +66,7 @@ def setup_workspace_routes():
         }
 
     @router.get("/vet")
-    def vet(request: Request, path: str = Query(default="")):
+    def vet(request: Request, path: str = Query(default=""), owner: str = Depends(require_user)):
         """Validate a workspace path without binding it.
 
         The UI calls this before persisting a manually typed path (/workspace
@@ -75,7 +75,6 @@ def setup_workspace_routes():
         instead of being stored client-side and silently dropped at chat time.
         Admin-gated like /browse: it confirms path existence on the host.
         """
-        owner = get_current_user(request)
         if not owner_is_admin_or_single_user(owner):
             raise HTTPException(status_code=403, detail="Workspace selection is admin-only")
         from src.tool_execution import vet_workspace

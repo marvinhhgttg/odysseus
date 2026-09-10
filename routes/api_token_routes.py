@@ -4,10 +4,10 @@ import secrets
 import uuid
 
 import bcrypt
-from fastapi import APIRouter, HTTPException, Request, Form
+from fastapi import APIRouter, HTTPException, Request, Form, Depends
 
 from core.database import get_db_session, ApiToken
-from core.middleware import require_admin
+from src.auth_dependencies import invalidate_token_cache, require_admin, require_user
 from src.auth_helpers import get_current_user
 
 MAX_NAME_LEN = 100
@@ -77,8 +77,7 @@ def setup_api_token_routes() -> APIRouter:
     router = APIRouter(prefix="/api", tags=["api_tokens"])
 
     @router.get("/tokens")
-    def list_tokens(request: Request):
-        require_admin(request)
+    def list_tokens(request: Request, _admin: None = Depends(require_admin)):
         with get_db_session() as db:
             tokens = db.query(ApiToken).all()
             return [
@@ -98,15 +97,12 @@ def setup_api_token_routes() -> APIRouter:
     def _invalidate_cache(request: Request):
         """Tell the auth middleware its cached token map is stale."""
         try:
-            invalidator = getattr(request.app.state, "invalidate_token_cache", None)
-            if invalidator:
-                invalidator()
+            invalidate_token_cache(request)
         except Exception:
             pass
 
     @router.get("/tokens/profiles")
-    def token_profiles(request: Request):
-        require_admin(request)
+    def token_profiles(request: Request, _admin: None = Depends(require_admin)):
         return {
             "profiles": TOKEN_PROFILES,
             "allowed_scopes": sorted(ALLOWED_SCOPES),
@@ -118,12 +114,12 @@ def setup_api_token_routes() -> APIRouter:
         name: str = Form(""),
         scopes: str = Form(None),
         profile: str = Form(None),
+        _admin: None = Depends(require_admin),
+        owner: str = Depends(require_user),
     ):
-        require_admin(request)
         name = name.strip()[:MAX_NAME_LEN]
         if not name:
             raise HTTPException(400, "Token name is required")
-        owner = get_current_user(request)
         scope_list = _normalize_scopes(scopes, profile)
         scopes_value = ",".join(scope_list)
 
@@ -153,9 +149,7 @@ def setup_api_token_routes() -> APIRouter:
         }
 
     @router.patch("/tokens/{token_id}")
-    async def update_token(request: Request, token_id: str):
-        require_admin(request)
-        current_user = get_current_user(request)
+    async def update_token(request: Request, token_id: str, _admin: None = Depends(require_admin), current_user: str = Depends(require_user)):
         try:
             payload = await request.json()
         except Exception:
@@ -193,9 +187,7 @@ def setup_api_token_routes() -> APIRouter:
         return response
 
     @router.delete("/tokens/{token_id}")
-    def delete_token(request: Request, token_id: str):
-        require_admin(request)
-        current_user = get_current_user(request)
+    def delete_token(request: Request, token_id: str, _admin: None = Depends(require_admin), current_user: str = Depends(require_user)):
         with get_db_session() as db:
             token = db.query(ApiToken).filter(ApiToken.id == token_id).first()
             if not token:

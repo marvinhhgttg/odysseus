@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Form
+from fastapi import APIRouter, HTTPException, Request, Form, Depends
 from pydantic import BaseModel, Field
 
 from core.database import SessionLocal, Webhook, ModelEndpoint
@@ -24,7 +24,7 @@ MAX_SECRET_LEN = 256
 MAX_MESSAGE_LEN = 32_000
 
 
-from core.middleware import require_admin as _require_admin
+from src.auth_dependencies import require_admin
 
 
 def _select_api_chat_fallback_endpoint(db, token_owner: Optional[str]):
@@ -69,8 +69,7 @@ def setup_webhook_routes(
 ) -> APIRouter:
 
     @router.get("/webhooks")
-    def list_webhooks(request: Request):
-        _require_admin(request)
+    def list_webhooks(request: Request, _admin: None = Depends(require_admin)):
         db = SessionLocal()
         try:
             hooks = db.query(Webhook).all()
@@ -100,7 +99,6 @@ def setup_webhook_routes(
         secret: str = Form(""),
         events: str = Form(""),
     ):
-        _require_admin(request)
         name = name.strip()[:MAX_NAME_LEN]
         if not name:
             raise HTTPException(400, "Webhook name is required")
@@ -139,8 +137,7 @@ def setup_webhook_routes(
         return {"id": webhook_id, "name": name}
 
     @router.post("/webhooks/{webhook_id}/test")
-    async def test_webhook(request: Request, webhook_id: str):
-        _require_admin(request)
+    async def test_webhook(request: Request, webhook_id: str, _admin: None = Depends(require_admin)):
         db = SessionLocal()
         try:
             wh = db.query(Webhook).filter(Webhook.id == webhook_id).first()
@@ -154,8 +151,7 @@ def setup_webhook_routes(
         return {"status": "sent"}
 
     @router.patch("/webhooks/{webhook_id}")
-    def toggle_webhook(request: Request, webhook_id: str):
-        _require_admin(request)
+    def toggle_webhook(request: Request, webhook_id: str, _admin: None = Depends(require_admin)):
         db = SessionLocal()
         try:
             wh = db.query(Webhook).filter(Webhook.id == webhook_id).first()
@@ -168,8 +164,7 @@ def setup_webhook_routes(
             db.close()
 
     @router.delete("/webhooks/{webhook_id}")
-    def delete_webhook(request: Request, webhook_id: str):
-        _require_admin(request)
+    def delete_webhook(request: Request, webhook_id: str, _admin: None = Depends(require_admin)):
         db = SessionLocal()
         try:
             deleted = db.query(Webhook).filter(Webhook.id == webhook_id).delete()

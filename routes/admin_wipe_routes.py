@@ -13,9 +13,9 @@ import json
 import logging
 import os
 import shutil
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
 from core.database import (
     SessionLocal,
     Session as DbSession,
@@ -69,8 +69,7 @@ def setup_admin_wipe_routes(session_manager):
     router = APIRouter(prefix="/api/admin")
 
     @router.delete("/wipe/{kind}")
-    def wipe(kind: str, request: Request):
-        require_admin(request)
+    def wipe(kind: str, request: Request, _admin: None = Depends(require_admin)):
         kind = (kind or "").strip().lower()
 
         db = SessionLocal()

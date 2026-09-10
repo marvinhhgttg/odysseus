@@ -4,14 +4,14 @@ import html
 import json
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Form, HTTPException, Response, Request
+from fastapi import APIRouter, Form, HTTPException, Response, Request, Depends
 import logging
 
 from core.session_manager import SessionManager
 from core.models import ChatMessage
 from src.request_models import SessionResponse
 from core.database import Session as DbSession, SessionLocal, Document, GalleryImage, utcnow_naive
-from src.auth_helpers import effective_user, _auth_disabled, owner_filter
+from src.auth_helpers import effective_user, _auth_disabled, owner_filter, get_effective_user, require_admin, get_auth_manager
 from src.session_actions import is_session_recently_active
 
 
@@ -92,7 +92,7 @@ def _reject_compact_during_active_run(session_id: str) -> None:
         raise HTTPException(409, "Session has an active run; try compacting after it finishes")
 
 
-def _verify_session_owner(request: Request, session_id: str, session_manager=None):
+def _verify_session_owner(request: Request, session_id: str, session_manager=None, user: str = Depends(get_effective_user)):
     """Verify the current user owns the session, honoring single-user modes.
 
     Authenticated requests must match the stored DB or in-memory owner. When
@@ -101,7 +101,6 @@ def _verify_session_owner(request: Request, session_id: str, session_manager=Non
     keeps QA/dev instances with AUTH_ENABLED=false from rejecting owner-stamped
     rows created while auth was previously enabled.
     """
-    user = effective_user(request)
     if not user and not _auth_disabled():
         raise HTTPException(401, "Authentication required")
     db = SessionLocal()
@@ -127,7 +126,7 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 def _current_user_is_admin(request: Request, user: str | None) -> bool:
     if not user:
         return False
-    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    auth_mgr = get_auth_manager(request)
     is_admin = getattr(auth_mgr, "is_admin", None)
     if not callable(is_admin):
         return False
@@ -212,8 +211,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
     SESSIONS_FILE = config.get("SESSIONS_FILE")
     
     @router.get("/sessions")
-    def list_sessions(request: Request):
-        user = effective_user(request)
+    def list_sessions(request: Request, user: str = Depends(get_effective_user)):
         # Lazy purge: incognito sessions are ephemeral by design — wipe leftovers
         # from the DB and session_manager so they vanish on the next page refresh.
         # BUT: skip sessions that were created within the last 10 minutes.
@@ -327,9 +325,9 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         skip_validation: str = Form(None),
         api_key: str = Form(""),
         endpoint_id: str = Form(""),
+        user: str = Depends(get_effective_user),
     ):
         skip_val = str(skip_validation).lower() == "true"
-        user = effective_user(request)
         endpoint_api_key = ""
         endpoint_base_url = ""
         _reject_raw_endpoint_url_for_non_admin(request, user, endpoint_id, endpoint_url)
@@ -414,7 +412,6 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                 model_to_use = found
         
         sid = str(uuid.uuid4())
-        user = effective_user(request)
         session = session_manager.create_session(
             session_id=sid,
             name=name or "",
@@ -454,6 +451,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         name: str = Form(None), folder: str = Form(None),
         model: str = Form(None), endpoint_url: str = Form(None),
         endpoint_id: str = Form(None),
+        user: str = Depends(get_effective_user),
     ):
         _verify_session_owner(request, sid)
         try:
@@ -478,7 +476,6 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                 db.close()
         # Switch model/endpoint mid-session
         if model is not None and endpoint_url is not None:
-            user = effective_user(request)
             _reject_raw_endpoint_url_for_non_admin(request, user, endpoint_id, endpoint_url)
             endpoint_api_key = ""
             endpoint_base_url = ""
@@ -611,11 +608,8 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             )
     
     @router.delete("/sessions/all")
-    def delete_all_sessions(request: Request):
+    def delete_all_sessions(request: Request, _admin: None = Depends(require_admin)):
         """Admin only: permanently delete ALL sessions and their messages."""
-        from core.middleware import require_admin
-        require_admin(request)
-
         db = SessionLocal()
         try:
             from core.database import ChatMessage as DbChatMessage
@@ -702,9 +696,8 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             db.close()
 
     @router.get("/sessions/archived")
-    def list_archived_sessions(request: Request, search: str = "", offset: int = 0, limit: int = 20, sort: str = "recent", model: str = ""):
+    def list_archived_sessions(request: Request, search: str = "", offset: int = 0, limit: int = 20, sort: str = "recent", model: str = "", user: str = Depends(get_effective_user)):
         """List archived sessions for the archive browser."""
-        user = effective_user(request)
         db = SessionLocal()
         try:
             q = db.query(DbSession).filter(DbSession.archived == True)
@@ -845,8 +838,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         )
     
     @router.post("/sessions/save")
-    def sessions_save_now(request: Request):
-        user = effective_user(request)
+    def sessions_save_now(request: Request, user: str = Depends(get_effective_user)):
         if not user:
             raise HTTPException(401, "Not authenticated")
         session_manager.save_sessions()
@@ -857,12 +849,12 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         request: Request,
         name: str = Form("New Chat (OpenAI)"),
         model: str = Form("gpt-4o"),
-        rag: str = Form(None)
+        rag: str = Form(None),
+        user: str = Depends(get_effective_user),
     ):
         if not OPENAI_API_KEY:
             raise HTTPException(400, "Server missing OPENAI_API_KEY")
         sid = str(uuid.uuid4())
-        user = effective_user(request)
         session = session_manager.create_session(
             session_id=sid,
             name="",
@@ -915,7 +907,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             raise HTTPException(404, f"Session {session_id} not found")
 
     @router.post("/session/{session_id}/compact")
-    async def compact_session(request: Request, session_id: str):
+    async def compact_session(request: Request, session_id: str, user: str = Depends(get_effective_user)):
         """Summarize older messages into one compacted history entry."""
         _verify_session_owner(request, session_id)
         try:
@@ -940,7 +932,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         from src.endpoint_resolver import resolve_endpoint
         from src.llm_core import llm_call_async
 
-        owner = getattr(session, "owner", None) or effective_user(request)
+        owner = getattr(session, "owner", None) or user
         url, model, headers = resolve_endpoint("utility", owner=owner)
         if not url or not model:
             url, model, headers = session.endpoint_url, session.model, session.headers
@@ -995,7 +987,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         }
 
     @router.post("/sessions/auto-sort")
-    def auto_sort_sessions(request: Request, skip_llm: bool = False):
+    def auto_sort_sessions(request: Request, skip_llm: bool = False, user: str = Depends(get_effective_user)):
         """Use AI to categorize all sessions into folders.
 
         Phase 1 deletes empty/throwaway sessions and Phase 2 asks the LLM
@@ -1004,7 +996,6 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         users can clean junk without spending tokens.
         """
         from src.llm_core import llm_call
-        user = effective_user(request)
         single_user_mode = not user and _auth_disabled()
         user_sessions = session_manager.get_sessions_for_user(user)
 

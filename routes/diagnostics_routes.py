@@ -5,11 +5,12 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
-from fastapi import APIRouter, Body, HTTPException, Form, Request
+from fastapi import APIRouter, Body, HTTPException, Form, Request, Depends
 
 from services.youtube.youtube_handler import extract_youtube_id, extract_transcript_async
 from core.constants import DEFAULT_HOST, DATA_DIR
-from core.middleware import require_admin
+from src.auth_dependencies import require_admin
+from src.components import get_task_supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +71,12 @@ def setup_diagnostics_routes(
     router = APIRouter(tags=["diagnostics"])
 
     @router.get("/api/diagnostics/services")
-    async def get_service_health(request: Request) -> Dict[str, Any]:
+    async def get_service_health(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
         """Consolidated degraded-state report for ChromaDB, SearXNG, email,
         ntfy, and provider endpoints. Non-intrusive probes — safe to poll."""
-        require_admin(request)
         from src.service_health import collect_service_health
         return await collect_service_health(rag_manager, memory_vector)
 
@@ -95,7 +98,6 @@ def setup_diagnostics_routes(
         tokens, secrets, or IDs beyond the integration_id already visible in
         the UI. Admin-only via require_admin.
         """
-        require_admin(request)
         from src.integrations import load_integrations
         from src.services.google_oauth_maintenance import sweep_status
 
@@ -150,7 +152,6 @@ def setup_diagnostics_routes(
 
         In-process ring buffer, bounded to 50 entries per category. Admin-only.
         """
-        require_admin(request)
         from src.services.grounding_diagnostics import rejection_status
         return rejection_status()
 
@@ -158,6 +159,7 @@ def setup_diagnostics_routes(
     async def explain_grounding(
         request: Request,
         payload: Dict[str, Any] = Body(default={}),
+        _admin: None = Depends(require_admin),
     ) -> Dict[str, Any]:
         """Dry-run the grounding filter for a given (answer, sources) pair.
 
@@ -167,7 +169,6 @@ def setup_diagnostics_routes(
         overall verdict clean|trimmed|fallback. Does NOT touch the live ring
         buffer — use this to reproduce a suspected filter bug end-to-end.
         """
-        require_admin(request)
         answer = str(payload.get("answer") or "")
         sources = payload.get("sources") or []
         if not isinstance(sources, list):
@@ -188,13 +189,15 @@ def setup_diagnostics_routes(
         currently selected local model can hold, before users see degraded
         tool-call behaviour.
         """
-        require_admin(request)
         from src.services.prompt_budget import prompt_budget_status
         return prompt_budget_status()
 
     @router.get("/api/diagnostics/logs")
-    async def get_diagnostics_logs(request: Request, limit: int = 200) -> Dict[str, Any]:
-        require_admin(request)
+    async def get_diagnostics_logs(
+        request: Request,
+        _admin: None = Depends(require_admin),
+        limit: int = 200,
+    ) -> Dict[str, Any]:
         limit = max(1, min(limit, 1000))
         try:
             log_file = os.path.join(DATA_DIR, "logs", "app.log")
@@ -217,8 +220,10 @@ def setup_diagnostics_routes(
             raise HTTPException(500, f"Failed to retrieve logs: {str(e)}")
 
     @router.get("/api/db/stats")
-    async def get_database_stats(request: Request) -> Dict[str, Any]:
-        require_admin(request)
+    async def get_database_stats(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
         try:
             from core.database import get_detailed_stats
             return get_detailed_stats()
@@ -227,15 +232,20 @@ def setup_diagnostics_routes(
             raise HTTPException(500, "Failed to retrieve database statistics")
 
     @router.get("/api/rag/stats")
-    async def get_rag_stats(request: Request) -> Dict[str, Any]:
-        require_admin(request)
+    async def get_rag_stats(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
         if rag_available and rag_manager:
             return rag_manager.get_stats()
         return {"error": "RAG system not available"}
 
     @router.get("/api/test/youtube")
-    async def test_youtube(request: Request, url: str) -> Dict[str, Any]:
-        require_admin(request)
+    async def test_youtube(
+        request: Request,
+        url: str,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
         try:
             video_id = extract_youtube_id(url)
             if not video_id:
@@ -255,8 +265,11 @@ def setup_diagnostics_routes(
             return {"error": str(e)}
 
     @router.post("/api/test-research")
-    async def test_research(request: Request, query: str = Form("What is machine learning?")) -> Dict[str, Any]:
-        require_admin(request)
+    async def test_research(
+        request: Request,
+        _admin: None = Depends(require_admin),
+        query: str = Form("What is machine learning?"),
+    ) -> Dict[str, Any]:
         try:
             endpoint = f"http://{DEFAULT_HOST}:8000/v1/chat/completions"
             model = "gpt-oss-120b"
@@ -269,5 +282,38 @@ def setup_diagnostics_routes(
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "query": query}
+
+    @router.get("/api/diagnostics/tasks")
+    async def get_task_supervisor_status(
+        request: Request,
+        _admin: None = Depends(require_admin),
+        supervisor=Depends(get_task_supervisor),
+    ) -> Dict[str, Any]:
+        """Snapshot of every supervised background task.
+
+        Reports phase (pending / running / done / crashed / stopped), restart
+        counts, the restart budget, whether restarts are enabled, the last
+        error, and uptime or next-retry timing. Admin-only via require_admin.
+        """
+        if supervisor is None:
+            return {
+                "supervisor": "not_loaded",
+                "tasks": {},
+                "total": 0,
+                "running": 0,
+                "crashed": 0,
+            }
+        status = supervisor.status()
+        totals = {"total": 0, "running": 0, "crashed": 0, "done": 0}
+        for entry in status.values():
+            totals["total"] += 1
+            phase = entry["phase"]
+            if phase in totals:
+                totals[phase] += 1
+        return {
+            "supervisor": "running" if supervisor.is_running() else "stopped",
+            "tasks": status,
+            **totals,
+        }
 
     return router

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from core.database import SessionLocal, Note
 from core.middleware import INTERNAL_TOOL_USER
-from src.auth_helpers import require_user
+from src.auth_helpers import require_user, get_auth_manager
 from src.constants import DATA_DIR
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -604,7 +604,7 @@ def setup_note_routes(task_scheduler=None):
             return True
         try:
             from core.auth import AuthManager
-            auth_mgr = getattr(request.app.state, "auth_manager", None) or AuthManager()
+            auth_mgr = get_auth_manager(request) or AuthManager()
             if not getattr(auth_mgr, "is_configured", True):
                 return True
             return bool(auth_mgr.is_admin(user))

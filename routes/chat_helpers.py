@@ -15,11 +15,11 @@ from src.llm_core import normalize_model_id
 from src.endpoint_resolver import normalize_base
 from src.context_compactor import maybe_compact, trim_for_context
 from src.model_context import estimate_tokens
-from src.auth_helpers import effective_user
+from src.auth_helpers import effective_user, get_effective_user
 from src.prompt_security import untrusted_context_message
 from routes.prefs_routes import _load_for_user as load_prefs_for_user
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Depends
 
 logger = logging.getLogger(__name__)
 
@@ -438,14 +438,13 @@ def add_user_message(sess, chat_handler, preprocessed: PreprocessedMessage, inco
         chat_handler.update_session_name_if_needed(sess, preprocessed.text_for_context)
 
 
-def fire_message_event(request, webhook_manager, session_id: str, sess, message: str, compare_mode: bool = False):
+def fire_message_event(request, webhook_manager, session_id: str, sess, message: str, compare_mode: bool = False, user: str = Depends(get_effective_user)):
     """Fire webhook and event_bus events for a new user message."""
     if webhook_manager and not compare_mode:
         webhook_manager.fire_and_forget("chat.message", {
             "session_id": session_id, "model": sess.model, "message": message[:2000],
         })
     from src.event_bus import fire_event
-    user = effective_user(request)
     fire_event("message_sent", user)
 
 
