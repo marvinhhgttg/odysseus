@@ -1,0 +1,14 @@
+aiosqlite==0.22.1
+langchain-core==1.6.1
+langchain-mcp-adapters==0.3.2
+langchain-openai==1.6.0
+langchain-protocol==0.0.19
+langgraph-checkpoint-sqlite==3.1.1
+langgraph-checkpoint==4.2.0
+langgraph-prebuilt==1.1.0
+langgraph-sdk==0.4.4
+langgraph==1.2.11
+openai==3.5.0
+pydantic_core==2.46.4
+pydantic-settings==2.14.1
+pydantic==2.13.4
