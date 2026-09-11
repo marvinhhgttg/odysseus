@@ -5,9 +5,12 @@ from __future__ import annotations
 import contextvars
 import logging
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from typing import Iterator
+
+from src.metrics import request_finished, request_started
 
 _REQUEST_ID = contextvars.ContextVar("odysseus_request_id", default="-")
 _AGENT_RUN_ID = contextvars.ContextVar("odysseus_agent_run_id", default="-")
@@ -90,8 +93,14 @@ class RequestIdMiddleware:
         request_id = normalize_request_id(headers.get("x-request-id"))
         token = _REQUEST_ID.set(request_id)
 
+        started = time.monotonic()
+        method = scope.get("method") or ""
+        terminal = {"status": 0}
+        request_started()
+
         async def send_with_request_id(message):
             if message.get("type") == "http.response.start":
+                terminal["status"] = message["status"]
                 response_headers = list(message.get("headers", []))
                 response_headers.append(
                     (b"x-request-id", request_id.encode("latin-1"))
@@ -103,3 +112,4 @@ class RequestIdMiddleware:
             await self.app(scope, receive, send_with_request_id)
         finally:
             _REQUEST_ID.reset(token)
+            request_finished(method, terminal["status"], time.monotonic() - started)

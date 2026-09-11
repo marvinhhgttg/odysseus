@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List
 
 from fastapi import APIRouter, Body, HTTPException, Form, Request, Depends
+from fastapi.responses import PlainTextResponse
 
 from services.youtube.youtube_handler import extract_youtube_id, extract_transcript_async
 from core.constants import DEFAULT_HOST, DATA_DIR
@@ -79,6 +80,39 @@ def setup_diagnostics_routes(
         ntfy, and provider endpoints. Non-intrusive probes — safe to poll."""
         from src.service_health import collect_service_health
         return await collect_service_health(rag_manager, memory_vector)
+
+    @router.get("/api/diagnostics/metrics")
+    async def get_http_metrics(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """In-process HTTP/runtime metrics snapshot (JSON).
+
+        Aggregate counters and latency percentiles for every request served
+        through the correlation middleware: totals, per-status and per-method
+        buckets, the active in-flight gauge, avg/p50/p95 response latency,
+        uptime, and app version. JSON twin of /api/diagnostics/metrics/export.
+        Admin-only via require_admin.
+        """
+        from src.metrics import snapshot
+        return snapshot()
+
+    @router.get("/api/diagnostics/metrics/export")
+    async def export_http_metrics(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ):
+        """Prometheus text-format export of the same metrics snapshot.
+
+        Intended for a Prometheus / Grafana scraper with admin credentials.
+        Content-Type is text/plain; version=0.0.4 so ``promtool check`` accepts
+        the payload directly. Admin-only via require_admin.
+        """
+        from src.metrics import prometheus_text
+        return PlainTextResponse(
+            prometheus_text(),
+            media_type="text/plain; version=0.0.4",
+        )
 
     @router.get("/api/health/google-oauth")
     async def get_google_oauth_health(request: Request) -> Dict[str, Any]:
