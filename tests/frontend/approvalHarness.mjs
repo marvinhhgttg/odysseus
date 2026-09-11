@@ -168,10 +168,26 @@ export async function loadApprovalModule(options = {}) {
     return options.fetch(...args);
   };
 
+  // The 60s auto-approve countdown schedules a repeating 500ms interval.
+  // Under Node that would keep the event loop alive and hang the test runner,
+  // so timer calls are captured instead of scheduled. startAutoApprove() still
+  // runs its first synchronous tick, which is what sets the visible countdown.
+  calls.intervals = [];
+  calls.clearedIntervals = [];
+  const setIntervalStub = (fn, ms) => {
+    calls.intervals.push({ fn, ms });
+    return calls.intervals.length;
+  };
+  const clearIntervalStub = id => {
+    calls.clearedIntervals.push(id);
+  };
+
   const source = readApprovalSource();
   const wrapped = `
     export default function boot(deps) {
       const { document, sessionModule, uiModule, fetch, URL, console } = deps;
+      const setInterval = deps.setInterval;
+      const clearInterval = deps.clearInterval;
       let API_BASE = deps.API_BASE;
       let _pendingApprovalResume = null;
       let _hideUserBubble = false;
@@ -199,6 +215,8 @@ export async function loadApprovalModule(options = {}) {
     sessionModule,
     uiModule,
     fetch: fetchStub,
+    setInterval: setIntervalStub,
+    clearInterval: clearIntervalStub,
     URL,
     API_BASE: options.apiBase ?? '',
     console: {

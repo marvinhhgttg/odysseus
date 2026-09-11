@@ -182,7 +182,21 @@ def test_changed_arguments_fail_closed(store):
     ).status is ApprovalStatus.APPROVED
 
 
-def test_expired_approval_is_marked_expired(store):
+def test_auto_approved_stale_pending_is_listed(store):
+    """Stale PENDING is auto-approved; list_for_session returns approved."""
+    approval = store.create(make_approval(), tool_content=TOOL_CONTENT)
+    # List after the window: PENDING → auto-APPROVED.
+    rows = store.list_for_session(
+        owner="marc",
+        session_id="session-1",
+        now=NOW + timedelta(minutes=10),
+    )
+    assert len(rows) == 1
+    assert rows[0].status is ApprovalStatus.APPROVED
+
+
+def test_stale_approved_can_be_consumed(store):
+    """An APPROVED approval that survived past its window is still consumable."""
     approval = store.create(make_approval(), tool_content=TOOL_CONTENT)
     store.approve(
         approval.id,
@@ -190,17 +204,12 @@ def test_expired_approval_is_marked_expired(store):
         now=NOW + timedelta(seconds=1),
     )
 
-    with pytest.raises(ApprovalError, match="expired"):
-        store.consume(
-            approval.id,
-            **BASE,
-            now=NOW + timedelta(minutes=10),
-        )
-
-    assert store.get(
+    consumed = store.consume(
         approval.id,
-        owner="marc",
-    ).status is ApprovalStatus.EXPIRED
+        **BASE,
+        now=NOW + timedelta(minutes=10),
+    )
+    assert consumed.status is ApprovalStatus.CONSUMED
 
 
 def test_identical_fingerprints_can_have_distinct_approvals(store):
@@ -446,7 +455,7 @@ def test_list_for_session_is_owner_and_session_scoped(store):
     }
 
 
-def test_list_for_session_expires_stale_active_rows(store):
+def test_list_for_session_auto_approves_stale_pending(store):
     pending = store.create(
         make_approval(),
         tool_content=TOOL_CONTENT,
@@ -467,15 +476,18 @@ def test_list_for_session_expires_stale_active_rows(store):
         now=NOW + timedelta(minutes=10),
     )
 
-    assert found == []
+    # Stale active rows are kept and auto-approved (only an explicit
+    # reject blocks), never expired into an empty list.
+    assert len(found) == 2
+    assert {a.status for a in found} == {ApprovalStatus.APPROVED}
     assert store.get(
         pending.id,
         owner="marc",
-    ).status is ApprovalStatus.EXPIRED
+    ).status is ApprovalStatus.APPROVED
     assert store.get(
         approved.id,
         owner="marc",
-    ).status is ApprovalStatus.EXPIRED
+    ).status is ApprovalStatus.APPROVED
 
 
 def test_list_for_session_omits_terminal_states(store):

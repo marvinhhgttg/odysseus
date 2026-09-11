@@ -695,11 +695,40 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
     details.append(risk, source);
 
-    if (event.expiresAt) {
-      const expiry = document.createElement('span');
-      expiry.textContent = 'Expires: ' + String(event.expiresAt);
-      details.appendChild(expiry);
-    }
+    const countdown = document.createElement('span');
+    countdown.style.cssText =
+      'font-size:12px;opacity:.78;font-variant-numeric:tabular-nums';
+    let autoApproveTimer = null;
+
+    const stopAutoApprove = () => {
+      if (autoApproveTimer) {
+        clearInterval(autoApproveTimer);
+        autoApproveTimer = null;
+      }
+      countdown.textContent = '';
+    };
+
+    const startAutoApprove = () => {
+      const expiresIso = event && event.expiresAt;
+      if (!expiresIso) return;
+      const deadline = new Date(String(expiresIso)).getTime();
+      if (Number.isNaN(deadline)) return;
+      const tick = () => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          stopAutoApprove();
+          const cardStatus = wrap.dataset.approvalStatus;
+          if (!cardStatus || cardStatus === 'pending') {
+            decide('approve');
+          }
+          return;
+        }
+        countdown.textContent =
+          'Auto-approves in ' + Math.ceil(remaining / 1000) + 's…';
+      };
+      tick();
+      autoApproveTimer = setInterval(tick, 500);
+    };
 
     const status = document.createElement('div');
     status.className = 'approval-status';
@@ -768,6 +797,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     };
 
     const decide = async action => {
+      stopAutoApprove();
       setPending(
         true,
         action === 'approve' ? 'Approving…' : 'Rejecting…'
@@ -792,12 +822,20 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         } catch (_) {}
 
         if (!response.ok) {
-          throw new Error(
-            _approvalErrorText(
-              payload,
-              'Approval request failed (' + response.status + ').'
-            )
+          const message = _approvalErrorText(
+            payload,
+            'Approval request failed (' + response.status + ').'
           );
+          // If it was already auto-approved by the timeout policy, just
+          // resume — no need to error out.
+          if (
+            action === 'approve'
+            && /already.{0,20}approv/i.test(message)
+          ) {
+            startResume(payload);
+            return;
+          }
+          throw new Error(message);
         }
 
         if (action === 'reject') {
@@ -854,6 +892,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         () => decide('reject')
       );
       actions.append(approveButton, rejectButton);
+      details.appendChild(countdown);
+      startAutoApprove();
     }
 
     card.append(title, details, status, actions);

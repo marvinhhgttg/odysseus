@@ -122,7 +122,7 @@ class ToolApproval:
         risk: str,
         arguments: Any,
         now: datetime | None = None,
-        ttl: timedelta = timedelta(minutes=10),
+        ttl: timedelta = timedelta(seconds=60),
     ) -> "ToolApproval":
         if ttl <= timedelta(0):
             raise ApprovalError("ttl must be positive")
@@ -163,9 +163,10 @@ class ToolApproval:
         checked = now or utcnow()
         if checked.tzinfo is None:
             raise ApprovalError("now must be timezone-aware")
-        if self.status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED):
-            if checked >= self.expires_at:
-                return ApprovalStatus.EXPIRED
+        # Auto-approve on timeout: a PENDING approval past its expiry is
+        # silently approved. Only an explicit Reject can block.
+        if self.status == ApprovalStatus.PENDING and checked >= self.expires_at:
+            return ApprovalStatus.APPROVED
         return self.status
 
     def approve(self, *, now: datetime | None = None) -> "ToolApproval":
@@ -173,6 +174,12 @@ class ToolApproval:
         status = self.effective_status(now=decided)
         if status is ApprovalStatus.EXPIRED:
             return replace(self, status=ApprovalStatus.EXPIRED)
+        if status is ApprovalStatus.APPROVED:
+            # Either already approved, or auto-approved by timeout.
+            # If the user clicks Approve after the window, record the decision.
+            if self.status is ApprovalStatus.APPROVED:
+                raise ApprovalError("approval already approved")
+            return replace(self, status=ApprovalStatus.APPROVED, decided_at=decided)
         if status is not ApprovalStatus.PENDING:
             raise ApprovalError(f"cannot approve approval in state {status.value}")
         return replace(
@@ -186,7 +193,8 @@ class ToolApproval:
         status = self.effective_status(now=decided)
         if status is ApprovalStatus.EXPIRED:
             return replace(self, status=ApprovalStatus.EXPIRED)
-        if status is not ApprovalStatus.PENDING:
+        # Allow reject on stale PENDING (explicit Reject always wins).
+        if status not in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED):
             raise ApprovalError(f"cannot reject approval in state {status.value}")
         return replace(
             self,

@@ -459,7 +459,7 @@ async def test_persisted_approval_survives_store_and_router_reload(
         risk="host_control",
         arguments=SECRET_TOOL_CONTENT,
         now=created_at,
-        ttl=timedelta(minutes=10),
+        ttl=timedelta(seconds=60),
     )
 
     try:

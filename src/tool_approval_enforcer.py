@@ -61,7 +61,7 @@ class ToolApprovalEnforcer:
         store: Optional[ToolApprovalStore] = None,
         *,
         block_factory: Optional[BlockFactory] = None,
-        approval_ttl: timedelta = timedelta(minutes=10),
+        approval_ttl: timedelta = timedelta(seconds=60),
     ) -> None:
         if approval_ttl <= timedelta(0):
             raise ValueError("approval_ttl must be positive")

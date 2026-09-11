@@ -24,7 +24,7 @@ function approval(overrides = {}) {
     tool: 'shell',
     risk: 'high',
     status: 'pending',
-    expiresAt: '2026-08-07T12:00:00+00:00',
+    expiresAt: '2030-01-01T00:00:00+00:00',
     ...overrides,
   };
 }
@@ -71,7 +71,8 @@ test('a persisted pending approval is rendered after session load', async () => 
   assert.match(card.text, /Risk: high/);
   // Recovered cards must be labelled as such, not as a live policy prompt.
   assert.match(card.text, /Source: recovered/);
-  assert.match(card.text, /Expires: 2026-08-07T12:00:00\+00:00/);
+  // The 60s auto-approve policy is surfaced as a live countdown.
+  assert.match(card.text, /Auto-approves in \d+s…/);
 
   const labels = buttonsOf(card).map(b => b.textContent);
   assert.deepEqual(labels, ['Approve', 'Reject']);
@@ -90,6 +91,24 @@ test('recovery queries the owner-scoped session endpoint', async () => {
   const [url, init] = mod.calls.fetch[0];
   assert.equal(url, `http://localhost:9001/api/tool-approvals?sessionId=${SESSION}`);
   assert.equal(init.credentials, 'same-origin');
+});
+
+test('a pending card arms the auto-approve countdown and stops it on decision', async () => {
+  const mod = await loadApprovalModule({
+    currentSessionId: SESSION,
+    fetch: jsonResponse({ approvals: [approval()] }),
+  });
+
+  await mod.recoverToolApprovals(SESSION);
+
+  // The 60s policy renders as a repeating half-second countdown ticker.
+  assert.equal(mod.calls.intervals.length, 1);
+  assert.equal(mod.calls.intervals[0].ms, 500);
+
+  await buttonsOf(cardOf(mod)).find(b => b.textContent === 'Reject').click();
+
+  // Deciding the card arms nothing more; the interval is cleared.
+  assert.equal(mod.calls.clearedIntervals.length, 1);
 });
 
 test('recovery works before init() sets an absolute API base', async () => {

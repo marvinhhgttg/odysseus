@@ -137,7 +137,7 @@ def test_host_control_creates_redacted_pending_approval(enforcer, store):
     assert decision.assessment.risk is ToolRisk.HOST_CONTROL
     assert decision.approval.tool_name == "bash"
     assert decision.approval.risk == "host_control"
-    assert decision.approval.expires_at == NOW + timedelta(minutes=10)
+    assert decision.approval.expires_at == NOW + timedelta(seconds=60)
     assert store.create_calls == 1
 
     public = decision.approval.to_dict()

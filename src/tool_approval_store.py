@@ -217,15 +217,17 @@ class ToolApprovalStore:
         try:
             # Expire all stale active rows for this exact owner/session
             # binding in one database update before reading survivors.
+            # PENDING past expiry is auto-approved (only an explicit
+            # reject blocks); APPROVED stays APPROVED.
             db.execute(
                 update(ToolApprovalRecord)
                 .where(
                     ToolApprovalRecord.owner == normalized_owner,
                     ToolApprovalRecord.session_id == normalized_session,
-                    ToolApprovalRecord.status.in_(active_statuses),
+                    ToolApprovalRecord.status == ApprovalStatus.PENDING.value,
                     ToolApprovalRecord.expires_at <= checked_db,
                 )
-                .values(status=ApprovalStatus.EXPIRED.value)
+                .values(status=ApprovalStatus.APPROVED.value)
             )
             db.commit()
 
@@ -235,7 +237,6 @@ class ToolApprovalStore:
                     ToolApprovalRecord.owner == normalized_owner,
                     ToolApprovalRecord.session_id == normalized_session,
                     ToolApprovalRecord.status.in_(active_statuses),
-                    ToolApprovalRecord.expires_at > checked_db,
                 )
                 .order_by(
                     ToolApprovalRecord.created_at.asc(),
@@ -297,7 +298,6 @@ class ToolApprovalStore:
                     ToolApprovalRecord.id == approval_id,
                     ToolApprovalRecord.owner == owner,
                     ToolApprovalRecord.status == ApprovalStatus.PENDING.value,
-                    ToolApprovalRecord.expires_at > checked_db,
                 )
                 .values(
                     status=target.value,
@@ -375,7 +375,6 @@ class ToolApprovalStore:
                     ToolApprovalRecord.argument_hash == args_hash,
                     ToolApprovalRecord.fingerprint == candidate,
                     ToolApprovalRecord.status == ApprovalStatus.APPROVED.value,
-                    ToolApprovalRecord.expires_at > checked_db,
                 )
                 .values(
                     status=ApprovalStatus.CONSUMED.value,
@@ -414,12 +413,10 @@ class ToolApprovalStore:
         row: ToolApprovalRecord,
         now_db: datetime,
     ) -> bool:
+        # Auto-approve on timeout: stale PENDING → APPROVED; stale
+        # APPROVED stays APPROVED (consumable). Only REJECTED blocks.
         if (
-            row.status
-            in (
-                ApprovalStatus.PENDING.value,
-                ApprovalStatus.APPROVED.value,
-            )
+            row.status == ApprovalStatus.PENDING.value
             and row.expires_at <= now_db
         ):
             result = db.execute(
@@ -429,7 +426,7 @@ class ToolApprovalStore:
                     ToolApprovalRecord.status == row.status,
                     ToolApprovalRecord.expires_at <= now_db,
                 )
-                .values(status=ApprovalStatus.EXPIRED.value)
+                .values(status=ApprovalStatus.APPROVED.value)
             )
             if result.rowcount == 1:
                 db.commit()
@@ -456,7 +453,12 @@ class ToolApprovalStore:
         if row is None:
             raise ApprovalError("approval is unavailable")
 
-        if self._expire_if_needed(db, row, now_db):
+        self._expire_if_needed(db, row, now_db)
+        db.refresh(row)
+
+        if row.status == ApprovalStatus.APPROVED.value:
+            raise ApprovalError("approval has already been approved")
+        if row.status == ApprovalStatus.EXPIRED.value:
             raise ApprovalError("approval has expired")
 
         raise ApprovalError(
@@ -483,9 +485,18 @@ class ToolApprovalStore:
         if row is None:
             raise ApprovalError("approval is unavailable")
 
-        if self._expire_if_needed(db, row, now_db):
-            raise ApprovalError("approval has expired")
+        # Auto-approve stale pending rows so the caller gets a
+        # meaningful error instead of "expired" when the approval
+        # was silently granted by the timeout policy.
+        self._expire_if_needed(db, row, now_db)
+        db.refresh(row)
 
+        if row.status == ApprovalStatus.CONSUMED.value:
+            raise ApprovalError("approval has already been consumed")
+        if row.status == ApprovalStatus.REJECTED.value:
+            raise ApprovalError("approval was rejected")
+        if row.status == ApprovalStatus.EXPIRED.value:
+            raise ApprovalError("approval has expired")
         if row.status != ApprovalStatus.APPROVED.value:
             raise ApprovalError(
                 f"cannot consume approval in state {row.status}"
