@@ -22,6 +22,22 @@ The `approval` suite includes a Node-backed frontend test. It is skipped when
 `node` is not on `PATH`, so CI installs Node explicitly rather than relying on
 the runner image.
 
+The `prompt_injection` suite is a live-model behavioral eval: it makes real LLM
+calls against the locally configured MLX/Ollama models and is skipped by
+default. Run it through the dedicated CLI:
+
+```bash
+python evals/run_injection_tests.py            # offline: 90 skipped, exit 0
+python evals/run_injection_tests.py --live     # sets ODYSSEUS_RUN_LIVE_EVALS=1
+python evals/run_injection_tests.py --live -- -x
+python evals/run_injection_tests.py --list
+python evals/run_injection_tests.py --fail-if-skipped --live
+```
+
+`--fail-if-skipped` exits 1 when every collected case ended up skipped (the
+live run did not actually happen) instead of reporting a silent pass. The
+report is written to `evals/results/prompt_injection/latest.json`.
+
 The `runtime` suite boots `app.py` in a subprocess against a throwaway data
 directory, started from outside the repository. It is the slowest suite by an
 order of magnitude and the one that catches fresh-install breakage — a missing
