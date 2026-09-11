@@ -19,7 +19,7 @@ from src.auth_helpers import effective_user, get_effective_user
 from src.prompt_security import untrusted_context_message
 from routes.prefs_routes import _load_for_user as load_prefs_for_user
 
-from fastapi import HTTPException, Depends
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -448,8 +448,14 @@ def add_user_message(sess, chat_handler, preprocessed: PreprocessedMessage, inco
         chat_handler.update_session_name_if_needed(sess, preprocessed.text_for_context)
 
 
-def fire_message_event(request, webhook_manager, session_id: str, sess, message: str, compare_mode: bool = False, user: str = Depends(get_effective_user)):
+def fire_message_event(request, webhook_manager, session_id: str, sess, message: str, compare_mode: bool = False, user: Optional[str] = None):
     """Fire webhook and event_bus events for a new user message."""
+    if user is None:
+        from src.auth_dependencies import get_effective_user
+        try:
+            user = get_effective_user(request) or ""
+        except Exception:
+            user = ""
     if webhook_manager and not compare_mode:
         webhook_manager.fire_and_forget("chat.message", {
             "session_id": session_id, "model": sess.model, "message": message[:2000],

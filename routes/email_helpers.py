@@ -31,7 +31,7 @@ from email import encoders
 import mimetypes
 from pathlib import Path
 
-from fastapi import Query, HTTPException, Request, Depends
+from fastapi import Query, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -288,7 +288,7 @@ def _apply_email_style_mechanics(text: str) -> str:
     )
 
 
-def _require_auth(request: Request, u: str = Depends(require_user)) -> str:
+def _require_auth(request: Request) -> str:
     """Defense-in-depth: reject unauthenticated callers even if upstream
     middleware was bypassed (e.g. localhost-bypass, SSRF from a sibling
     service). Mirrors core.middleware.require_admin's resolution path.
@@ -299,6 +299,7 @@ def _require_auth(request: Request, u: str = Depends(require_user)) -> str:
     unconfigured mode are only honoured if they're coming from
     localhost; everyone else gets 401.
     """
+    u = get_current_user(request)
     if u:
         return u
     if _auth_disabled():

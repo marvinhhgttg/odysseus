@@ -4,6 +4,7 @@ import html
 import json
 import uuid
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Form, HTTPException, Response, Request, Depends
 import logging
 
@@ -92,8 +93,13 @@ def _reject_compact_during_active_run(session_id: str) -> None:
         raise HTTPException(409, "Session has an active run; try compacting after it finishes")
 
 
-def _verify_session_owner(request: Request, session_id: str, session_manager=None, user: str = Depends(get_effective_user)):
+def _verify_session_owner(request: Request, session_id: str, session_manager=None, user: Optional[str] = None):
     """Verify the current user owns the session, honoring single-user modes.
+
+    Callers either pass the resolver explicitly or the function resolves the
+    effective user internally. Must NEVER default to Depends(...): several
+    callers invoke this as a plain function, so a Depends object would leak in
+    as the user and every ownership check would fail with a false 404.
 
     Authenticated requests must match the stored DB or in-memory owner. When
     auth is disabled and no user is present, treat the app as single-user mode:
@@ -101,6 +107,8 @@ def _verify_session_owner(request: Request, session_id: str, session_manager=Non
     keeps QA/dev instances with AUTH_ENABLED=false from rejecting owner-stamped
     rows created while auth was previously enabled.
     """
+    if user is None:
+        user = effective_user(request)
     if not user and not _auth_disabled():
         raise HTTPException(401, "Authentication required")
     db = SessionLocal()
