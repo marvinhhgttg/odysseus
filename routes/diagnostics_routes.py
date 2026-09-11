@@ -291,9 +291,10 @@ def setup_diagnostics_routes(
     ) -> Dict[str, Any]:
         """Snapshot of every supervised background task.
 
-        Reports phase (pending / running / done / crashed / stopped), restart
-        counts, the restart budget, whether restarts are enabled, the last
-        error, and uptime or next-retry timing. Admin-only via require_admin.
+        Reports phase (pending / running / paused / done / crashed / stopped),
+        restart counts, the restart budget, whether restarts are enabled, the
+        last error, cumulative start/crash counters, and uptime or next-retry
+        timing. Admin-only via require_admin.
         """
         if supervisor is None:
             return {
@@ -315,5 +316,69 @@ def setup_diagnostics_routes(
             "tasks": status,
             **totals,
         }
+
+    async def _task_action(supervisor, name: str, action: str) -> Dict[str, Any]:
+        if supervisor is None:
+            return {"name": name, "ok": False, "error": "supervisor not loaded"}
+        try:
+            if action == "pause":
+                ok = await supervisor.pause(name)
+            elif action == "resume":
+                ok = await supervisor.resume(name)
+            elif action == "stop":
+                ok = await supervisor.stop(name)
+            elif action == "restart":
+                ok = await supervisor.restart(name)
+            else:
+                return {"name": name, "ok": False, "error": f"unknown action '{action}'"}
+        except Exception as e:  # noqa: BLE001 - surface as a controlled error response
+            return {"name": name, "ok": False, "error": f"{type(e).__name__}: {e}"}
+        entry = supervisor.status().get(name)
+        return {
+            "name": name,
+            "ok": ok,
+            "phase": entry.get("phase") if entry else None,
+            "error": "unknown task" if entry is None else None,
+        }
+
+    @router.post("/api/diagnostics/tasks/{name}/pause")
+    async def pause_supervised_task(
+        name: str,
+        request: Request,
+        _admin: None = Depends(require_admin),
+        supervisor=Depends(get_task_supervisor),
+    ) -> Dict[str, Any]:
+        """Pause one supervised task (soft-stop, no restart by watchdog)."""
+        return await _task_action(supervisor, name, "pause")
+
+    @router.post("/api/diagnostics/tasks/{name}/resume")
+    async def resume_supervised_task(
+        name: str,
+        request: Request,
+        _admin: None = Depends(require_admin),
+        supervisor=Depends(get_task_supervisor),
+    ) -> Dict[str, Any]:
+        """Resume a paused (or not-running) supervised task."""
+        return await _task_action(supervisor, name, "resume")
+
+    @router.post("/api/diagnostics/tasks/{name}/stop")
+    async def stop_supervised_task(
+        name: str,
+        request: Request,
+        _admin: None = Depends(require_admin),
+        supervisor=Depends(get_task_supervisor),
+    ) -> Dict[str, Any]:
+        """Permanently stop one supervised task (never respawned)."""
+        return await _task_action(supervisor, name, "stop")
+
+    @router.post("/api/diagnostics/tasks/{name}/restart")
+    async def restart_supervised_task(
+        name: str,
+        request: Request,
+        _admin: None = Depends(require_admin),
+        supervisor=Depends(get_task_supervisor),
+    ) -> Dict[str, Any]:
+        """Manually restart one supervised task with a fresh restart budget."""
+        return await _task_action(supervisor, name, "restart")
 
     return router

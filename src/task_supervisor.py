@@ -10,6 +10,8 @@ monitor, nightly skill audit, OAuth token refresh, …) is registered here as a
   backoff and a per-task restart budget,
 * exposes a uniform :meth:`TaskSupervisor.status` snapshot consumed by the
   ``GET /api/diagnostics/tasks`` endpoint,
+* supports per-task operational control — :meth:`pause`, :meth:`resume`,
+  :meth:`stop`, and :meth:`restart` — surfaced as admin endpoints,
 * and, on shutdown, cancels everything it owns.
 
 A spec's ``factory`` is a zero-arg callable returning an awaitable, so a
@@ -52,6 +54,8 @@ class _TaskRuntime:
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     next_attempt: Optional[float] = None
+    start_count: int = 0
+    crash_count: int = 0
 
 
 class TaskSupervisor:
@@ -64,13 +68,19 @@ class TaskSupervisor:
         self._watchdog: Optional[asyncio.Task] = None
         self._started = False
         self._stopping = False
+        self._stopped: set[str] = set()
 
     # ------------------------------------------------------------------
     # Registration / lifecycle
     # ------------------------------------------------------------------
 
     def register(self, spec: TaskSpec) -> None:
-        """Register a task spec. Registrations are idempotent per name."""
+        """Register a task spec. Registrations are idempotent per name.
+
+        Re-registering a previously permanently-stopped name re-arms it (the
+        task is eligible again at the next start or via restart/resume).
+        """
+        self._stopped.discard(spec.name)
         self._specs[spec.name] = spec
         self._runtime.setdefault(spec.name, _TaskRuntime())
 
@@ -80,6 +90,9 @@ class TaskSupervisor:
             return
         self._stopping = False
         for name in self._specs:
+            rt = self._runtime[name]
+            if name in self._stopped or rt.phase in ("stopped", "paused"):
+                continue
             self._spawn(name)
         self._started = True
         self._watchdog = asyncio.create_task(self._watch())
@@ -135,6 +148,81 @@ class TaskSupervisor:
         return self._started and not self._stopping
 
     # ------------------------------------------------------------------
+    # Per-task operational control
+    # ------------------------------------------------------------------
+
+    async def pause(self, name: str) -> bool:
+        """Soft-stop one task without stopping supervision for the rest.
+
+        The task is cancelled and parked in the ``paused`` phase; the watchdog
+        will not restart it. A later :meth:`resume` respawns it. Returns False
+        for unknown names or tasks already finished/stopped.
+        """
+        if name not in self._specs:
+            return False
+        rt = self._runtime[name]
+        if rt.phase in ("done", "stopped"):
+            return False
+        await self._cancel_current(name)
+        rt.phase = "paused"
+        rt.next_attempt = None
+        rt.finished_at = time.monotonic()
+        return True
+
+    async def resume(self, name: str) -> bool:
+        """Restart a paused (or otherwise not-running) task.
+
+        No-ops successfully when the task is already running. Also re-arms a
+        permanently-stopped task when an operator explicitly asks to run it.
+        """
+        if name not in self._specs:
+            return False
+        rt = self._runtime[name]
+        if rt.phase == "running" and rt.task and not rt.task.done():
+            return True
+        return await self.restart(name)
+
+    async def stop(self, name: str) -> bool:
+        """Permanently stop one task; the watchdog will never respawn it."""
+        if name not in self._specs:
+            return False
+        rt = self._runtime[name]
+        self._stopped.add(name)
+        await self._cancel_current(name)
+        rt.phase = "stopped"
+        rt.next_attempt = None
+        rt.finished_at = time.monotonic()
+        return True
+
+    async def restart(self, name: str) -> bool:
+        """Manually (re)start one task from any state.
+
+        Cancels any in-flight run, resets the restart budget, and spawns a
+        fresh run immediately. Explicitly re-arms permanently-stopped tasks.
+        """
+        if name not in self._specs:
+            return False
+        rt = self._runtime[name]
+        self._stopped.discard(name)
+        await self._cancel_current(name)
+        rt.restarts = 0
+        rt.gave_up = False
+        rt.next_attempt = None
+        self._spawn(name)
+        return True
+
+    async def _cancel_current(self, name: str) -> None:
+        """Cancel and await the task for ``name`` if one is still running."""
+        rt = self._runtime[name]
+        if rt.task and not rt.task.done():
+            rt.task.cancel()
+            try:
+                await rt.task
+            except (asyncio.CancelledError, Exception):
+                pass
+        rt.task = None
+
+    # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
 
@@ -153,6 +241,9 @@ class TaskSupervisor:
                 "restart_enabled": spec.restart,
                 "gave_up": rt.gave_up,
                 "last_error": rt.last_error,
+                "start_count": rt.start_count,
+                "crash_count": rt.crash_count,
+                "paused": rt.phase == "paused",
                 "uptime_seconds": None,
                 "next_retry_in_seconds": None,
             }
@@ -171,6 +262,7 @@ class TaskSupervisor:
         spec = self._specs[name]
         rt = self._runtime[name]
         rt.task = asyncio.create_task(self._run_guarded(name), name=f"supervised:{name}")
+        rt.start_count += 1
         rt.phase = "running"
         if rt.first_started is None:
             rt.first_started = time.monotonic()
@@ -196,6 +288,7 @@ class TaskSupervisor:
         except BaseException as e:  # noqa: BLE001 - supervised tasks report back
             rt.phase = "crashed"
             rt.finished_at = time.monotonic()
+            rt.crash_count += 1
             rt.last_error = f"{type(e).__name__}: {e}"
             logger.error("[supervisor] task '%s' crashed: %s", name, rt.last_error)
 
@@ -205,6 +298,8 @@ class TaskSupervisor:
             await asyncio.sleep(self._tick)
             now = time.monotonic()
             for name, spec in self._specs.items():
+                if name in self._stopped:
+                    continue
                 rt = self._runtime[name]
                 if rt.phase == "done":
                     if spec.restart:
