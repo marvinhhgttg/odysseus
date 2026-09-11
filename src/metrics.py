@@ -28,6 +28,7 @@ _active = 0
 _status_counts: Dict[int, int] = {}
 _method_counts: Dict[str, int] = {}
 _response_times: Deque[float] = deque(maxlen=2000)
+_internal_tool_outcomes: Dict[str, int] = {}
 
 
 def reset_counts() -> None:
@@ -39,6 +40,7 @@ def reset_counts() -> None:
         _status_counts.clear()
         _method_counts.clear()
         _response_times.clear()
+        _internal_tool_outcomes.clear()
 
 
 def request_started() -> None:
@@ -61,6 +63,18 @@ def request_finished(method: str, status_code: int, duration_s: float) -> None:
         if method_key:
             _method_counts[method_key] = _method_counts.get(method_key, 0) + 1
         _response_times.append(max(0.0, duration_s))
+
+
+def record_internal_tool_outcome(outcome: str) -> None:
+    """Count an internal-tool loopback auth outcome.
+
+    Outcomes are ``granted`` (token + trusted loopback), ``impersonated``
+    (loopback call that resolved an ``X-Odysseus-Owner`` user), and ``rejected``
+    (internal-tool header present but the gate failed — wrong token or a
+    non-loopback/proxied peer).
+    """
+    with _LOCK:
+        _internal_tool_outcomes[outcome] = _internal_tool_outcomes.get(outcome, 0) + 1
 
 
 def _percentile(values: list[float], q: float) -> Optional[float]:
@@ -92,6 +106,7 @@ def snapshot() -> Dict[str, object]:
         active = _active
         status = dict(_status_counts)
         method = dict(_method_counts)
+        tool_outcomes = dict(_internal_tool_outcomes)
 
     summary = sum(times)
     avg = round(summary / len(times), 4) if times else None
@@ -107,6 +122,7 @@ def snapshot() -> Dict[str, object]:
         "errors_5xx_total": sum(v for k, v in status.items() if k >= 500),
         "requests_by_status": status,
         "requests_by_method": method,
+        "internal_tool_outcomes": tool_outcomes,
         "latency_seconds": {
             "avg": avg,
             "p50": round(p50, 4) if p50 is not None else None,
@@ -131,6 +147,15 @@ def prometheus_text() -> str:
         lines.append(f'odysseus_http_requests_total{{status="{code}"}} {count}')
     for method, count in sorted(data["requests_by_method"].items()):
         lines.append(f'odysseus_http_requests_total{{method="{method}"}} {count}')
+
+    tool_total = sum(data["internal_tool_outcomes"].values())
+    lines += [
+        "# HELP odysseus_internal_tool_requests_total Internal-tool loopback auth outcomes.",
+        "# TYPE odysseus_internal_tool_requests_total counter",
+        f"odysseus_internal_tool_requests_total {tool_total}",
+    ]
+    for result, count in sorted(data["internal_tool_outcomes"].items()):
+        lines.append(f'odysseus_internal_tool_requests_total{{result="{result}"}} {count}')
 
     lines += [
         "# HELP odysseus_http_errors_total HTTP responses with status >= 500.",

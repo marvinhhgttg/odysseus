@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from typing import Optional
 
 from fastapi import Request
 
@@ -78,6 +79,33 @@ def internal_tool_request_ok(request: Request) -> bool:
     client that somehow possesses the token must still fail closed.
     """
     return _token_matches(request) and is_trusted_loopback(request)
+
+
+def audit_internal_tool_request(request: Request, known_users) -> Optional[dict]:
+    """Audit one internal-tool auth attempt and resolve its outcome.
+
+    Returns ``None`` when the request is not an internal-tool candidate at all
+    (no header) — nothing is recorded. Otherwise records the outcome in
+    ``src.metrics`` and returns::
+
+        {"granted": True,  "user": <resolved user>, "outcome": "granted"}  # or "impersonated"
+        {"granted": False, "outcome": "rejected"}
+
+    ``granted`` means the caller may bypass normal auth; ``rejected`` means the
+    header was present but the gate failed (wrong token, or a non-loopback /
+    proxied peer) and normal auth must continue.
+    """
+    from src.metrics import record_internal_tool_outcome
+
+    if not request.headers.get(INTERNAL_TOOL_HEADER):
+        return None
+    if not internal_tool_request_ok(request):
+        record_internal_tool_outcome("rejected")
+        return {"granted": False, "outcome": "rejected"}
+    user = resolve_internal_tool_user(request, known_users)
+    outcome = "impersonated" if user != INTERNAL_TOOL_USER else "granted"
+    record_internal_tool_outcome(outcome)
+    return {"granted": True, "user": user, "outcome": outcome}
 
 
 def resolve_internal_tool_user(request: Request, known_users) -> str:

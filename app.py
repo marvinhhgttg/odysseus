@@ -327,21 +327,18 @@ if AUTH_ENABLED:
             # (no admin cookie available in that context). Restricted to
             # loopback clients + matching token to keep it locked down.
             try:
-                from src.internal_tool_auth import (
-                    internal_tool_request_ok,
-                    is_trusted_loopback,
-                    resolve_internal_tool_user,
+                from src.internal_tool_auth import audit_internal_tool_request
+                # Impersonation: when the agent's loopback call sets
+                # X-Odysseus-Owner, attribute the request to that user only
+                # if they exist. Authorization checks remain separate; this
+                # is just owner attribution for notes/calendar/etc.
+                _auth_mgr = getattr(request.app.state, "auth_manager", None) or auth_manager
+                _intercepted = audit_internal_tool_request(
+                    request,
+                    getattr(_auth_mgr, "users", {}),
                 )
-                if internal_tool_request_ok(request):
-                    # Impersonation: when the agent's loopback call sets
-                    # X-Odysseus-Owner, attribute the request to that user only
-                    # if they exist. Authorization checks remain separate; this
-                    # is just owner attribution for notes/calendar/etc.
-                    _auth_mgr = getattr(request.app.state, "auth_manager", None) or auth_manager
-                    request.state.current_user = resolve_internal_tool_user(
-                        request,
-                        getattr(_auth_mgr, "users", {}),
-                    )
+                if _intercepted is not None and _intercepted.get("granted"):
+                    request.state.current_user = _intercepted["user"]
                     request.state.api_token = False
                     return await call_next(request)
             except Exception as _e:
