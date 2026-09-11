@@ -105,6 +105,8 @@ _scratch/
 
 # Local evaluation reports
 /.artifacts/evals/
+# Live eval run output (large raw capture dumps) — keep results local
+evals/results/
 
 # Local LangGraph configuration
 config/langgraph.local.env
