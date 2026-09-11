@@ -5,13 +5,12 @@ Manages connections to MCP (Model Context Protocol) tool servers.
 Each server exposes tools that are made available to the agent loop.
 """
 
+import asyncio
 import json
 import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-from src.runtime_paths import get_app_root
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +143,35 @@ class McpManager:
         self._stacks: Dict[str, Any] = {}
         # server_id -> background connect task (HTTP transport / OAuth)
         self._connect_tasks: Dict[str, Any] = {}
+        # server_id -> the params a server was last (re)connected with, so a
+        # crashed server can be brought back up by the availability watchdog
+        # or by a failed tool call without the caller repeating the config.
+        self._params: Dict[str, Dict[str, Any]] = {}
+        # server_ids that should stay connected (enabled DB servers + builtins).
+        # The watchdog only auto-reconnects these; explicit disables are removed.
+        self._expected_up: set = set()
+        # server_ids that completed at least one successful connect. Guarantees
+        # the watchdog never hammers a server that never worked in the first place.
+        self._ever_connected: set = set()
+        # Strong refs to fire-and-forget background tasks (see register_builtin)
+        self._bg_tasks: set = set()
+        # Availability watchdog task
+        self._watchdog_task = None
         # Tracking updates to tools/connections for RAG indexing / prompt cache
         self._generation = 0
+
+    def _spawn_bg(self, coro) -> asyncio.Task:
+        """Schedule a background task and hold a strong reference until it's done.
+
+        asyncio only keeps weak references to tasks created via create_task, so
+        without this a connect/watchdog task can be garbage-collected mid-run and
+        the connection silently never completes. Must be called from a running
+        event loop (all callers are async).
+        """
+        task = asyncio.get_running_loop().create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     async def connect_server(
         self,
@@ -158,6 +184,17 @@ class McpManager:
         url: Optional[str] = None,
     ) -> bool:
         """Connect to an MCP server via stdio, SSE, or Streamable HTTP transport."""
+        # Remember what this server was (re)connected with so the availability
+        # watchdog / failed-call path can rebuild it without the caller's config.
+        self._params[server_id] = {
+            "name": name,
+            "transport": transport,
+            "command": command,
+            "args": list(args or []),
+            "env": dict(env or {}),
+            "url": url,
+            "db_id": server_id,
+        }
         try:
             if transport == "stdio":
                 res = await self._connect_stdio(server_id, name, command, args or [], env or {})
@@ -169,6 +206,7 @@ class McpManager:
                 logger.error(f"Unknown MCP transport: {transport}")
                 res = False
             if res:
+                self._ever_connected.add(server_id)
                 self._generation += 1
             return res
         except Exception as e:
@@ -401,36 +439,184 @@ class McpManager:
         self._sessions.pop(server_id, None)
         self._tools.pop(server_id, None)
         self._connections.pop(server_id, None)
+        self._expected_up.discard(server_id)
         self._generation += 1
         logger.info(f"MCP server disconnected: {server_id}")
 
     async def disconnect_all(self):
         """Disconnect from all MCP servers."""
+        self.stop_availability_watchdog()
         ids = list(self._sessions.keys())
         for sid in ids:
             await self.disconnect_server(sid)
 
+    def _should_auto_reconnect(self, server_id: str) -> bool:
+        """True when the availability watchdog or call_tool should auto-reconnect.
+
+        Built-in servers (registered at startup) and enabled DB servers are
+        candidates; a server the user explicitly disabled is not.
+        """
+        return self.is_builtin(server_id) or server_id in self._expected_up
+
+    async def _reconnect(self, server_id: str) -> bool:
+        """Tear down and reconnect a crashed or stale server.
+
+        For DB servers the live row is re-read so the reconnect honours
+        toggle-off / config edits that happened while the server was up.
+        Built-in and browser servers are reconnected from stored params
+        (their spec is never re-read from DB).
+        """
+        try:
+            await self.disconnect_server(server_id)
+        except Exception:
+            pass
+
+        spec = self._params.get(server_id)
+        if not spec:
+            return False
+
+        # DB servers: re-read to respect disable/delete/edits made while the
+        # server was running.  Only stash the result if it's still enabled and
+        # not deleted; otherwise clean up and bail.
+        if not self.is_builtin(server_id):
+            try:
+                from core.database import McpServer, SessionLocal
+                db = SessionLocal()
+                try:
+                    srv = db.query(McpServer).filter(McpServer.id == server_id).first()
+                finally:
+                    db.close()
+                if srv is None or not srv.is_enabled:
+                    self._ever_connected.discard(server_id)
+                    self._params.pop(server_id, None)
+                    return False
+                spec = {
+                    "name": srv.name,
+                    "transport": srv.transport,
+                    "command": srv.command,
+                    "args": json.loads(srv.args) if srv.args else [],
+                    "env": json.loads(srv.env) if srv.env else {},
+                    "url": srv.url,
+                }
+            except Exception as e:
+                logger.warning(f"Failed to re-read DB row for {server_id}: {e}")
+                return False
+
+        ok = await self.connect_server(
+            server_id=server_id,
+            name=spec["name"],
+            transport=spec["transport"],
+            command=spec.get("command"),
+            args=spec.get("args") or [],
+            env=spec.get("env") or {},
+            url=spec.get("url"),
+        )
+        if ok:
+            self._expected_up.add(server_id)
+            self._ever_connected.add(server_id)
+        return ok
+
     async def connect_all_enabled(self):
-        """Connect to all enabled MCP servers from the database."""
-        from src.database import McpServer, SessionLocal
+        """Connect to all enabled MCP servers from the database.
+
+        Unlike the builtin Python/NPX servers which are registered with
+        fire-and-forget background tasks, DB servers used to be connected
+        sequentially inside a single 20-second window.  A single hung server
+        could delay or completely block every server that followed.
+
+        DB servers are now launched as individual background tasks — exactly
+        like built-ins — so they cannot block each other.  The lifespan
+        function still awaits this coroutine (with a bounded timeout) so that
+        one slow server doesn't lengthen app startup indefinitely.
+        """
+        from core.database import McpServer, SessionLocal
 
         db = SessionLocal()
         try:
             servers = db.query(McpServer).filter(McpServer.is_enabled == True).all()
             for srv in servers:
+                if not srv.is_enabled:
+                    continue
+                self._expected_up.add(srv.id)
                 args = json.loads(srv.args) if srv.args else []
                 env = json.loads(srv.env) if srv.env else {}
-                await self.connect_server(
-                    server_id=srv.id,
-                    name=srv.name,
-                    transport=srv.transport,
-                    command=srv.command,
-                    args=args,
-                    env=env,
-                    url=srv.url,
-                )
+                self._spawn_bg(self._connect_guarded(
+                    srv.id, srv.name, srv.transport, srv.command, args, env, srv.url
+                ))
         finally:
             db.close()
+
+    async def _connect_guarded(self, server_id: str, name: str, transport: str,
+                                command, args, env, url):
+        """Background connect task: wraps connect_server with logging."""
+        try:
+            ok = await self.connect_server(
+                server_id=server_id, name=name, transport=transport,
+                command=command, args=args, env=env, url=url,
+            )
+            if ok:
+                logger.info(f"MCP server connected (startup): {name} ({server_id})")
+            else:
+                logger.warning(f"MCP server failed to connect (startup): {name} ({server_id})")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"MCP startup connect error for {name} ({server_id}): {type(e).__name__}: {e}")
+
+    # ------------------------------------------------------------------
+    # Availability watchdog
+    # ------------------------------------------------------------------
+
+    def start_availability_watchdog(self, interval: float = 60.0,
+                                     ping_timeout: float = 5.0):
+        """Start a background task that periodically pings every connected MCP
+        server and reconnects stale ones.  Built-in servers already get an
+        on-demand reconnect in ``call_tool``; the watchdog catches crashes that
+        happen *between* tool calls (e.g. a subprocess segfault) so that the
+        next call doesn't fail at runtime."""
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            return
+        self._watchdog_task = self._spawn_bg(self._watchdog_loop(interval, ping_timeout))
+
+    def stop_availability_watchdog(self):
+        task = self._watchdog_task
+        self._watchdog_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _watchdog_loop(self, interval: float, ping_timeout: float):
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self._check_connections(ping_timeout)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning(f"MCP availability watchdog error: {type(e).__name__}: {e}")
+
+    async def _check_connections(self, ping_timeout: float):
+        """Ping every live session; auto-reconnect unhealthy servers."""
+        for server_id in list(self._sessions.keys()):
+            session = self._sessions.get(server_id)
+            if session is None:
+                continue
+            healthy = False
+            try:
+                await asyncio.wait_for(session.send_ping(), timeout=ping_timeout)
+                healthy = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"MCP watchdog ping failed for {server_id}: {type(e).__name__}: {e}")
+            if healthy:
+                continue
+            if not self._should_auto_reconnect(server_id):
+                logger.debug(f"MCP watchdog: {server_id} unhealthy but not auto-reconnect candidate")
+                continue
+            logger.warning(f"MCP watchdog: server {server_id} unhealthy, reconnecting")
+            ok = await self._reconnect(server_id)
+            if not ok:
+                logger.error(f"MCP watchdog: reconnect failed for {server_id}")
 
     def get_tool_annotations(self, qualified_name: str) -> Any:
         """Return stored MCP annotations for a qualified tool name."""
@@ -464,10 +650,14 @@ class McpManager:
         try:
             result = await self._do_call(session, tool_name, arguments)
         except Exception as e:
-            # Auto-reconnect for builtin servers whose subprocess may have died
-            if self.is_builtin(server_id):
+            # Auto-reconnect on transient failures (crashed subprocess, dead pipe,
+            # session-level transport error). Previously only built-in servers were
+            # reconnected; DB servers are now handled the same way so the watchdog
+            # or the next tool call can transparently recover without manual
+            # "Reconnect" clicks in the UI.
+            if self._should_auto_reconnect(server_id):
                 logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}")
-                reconnected = await self._reconnect_builtin(server_id)
+                reconnected = await self._reconnect(server_id)
                 if reconnected:
                     session = self._sessions.get(server_id)
                     if session:
@@ -514,37 +704,6 @@ class McpManager:
         if images:
             result_dict["images"] = images
         return result_dict
-
-    async def _reconnect_builtin(self, server_id: str) -> bool:
-        """Tear down and reconnect a crashed builtin MCP server."""
-        import sys
-        from src.builtin_mcp import _BUILTIN_SERVERS
-
-        if server_id not in _BUILTIN_SERVERS:
-            return False
-
-        script_rel, name = _BUILTIN_SERVERS[server_id]
-        base_dir = get_app_root()
-        script_path = os.path.join(base_dir, script_rel)
-
-        # Clean up old connection
-        await self.disconnect_server(server_id)
-
-        try:
-            ok = await self.connect_server(
-                server_id=server_id,
-                name=name,
-                transport="stdio",
-                command=sys.executable,
-                args=[script_path],
-                env={"PYTHONPATH": base_dir},
-            )
-            if ok:
-                logger.info(f"Reconnected builtin MCP server: {name}")
-            return ok
-        except Exception as e:
-            logger.error(f"Failed to reconnect builtin MCP server {name}: {e}")
-            return False
 
     def get_all_openai_schemas(self, disabled_map: Optional[Dict[str, set]] = None) -> List[Dict]:
         """Return all MCP tools in OpenAI function-calling format.

@@ -78,11 +78,15 @@ async def startup_event(app: FastAPI):
         except BaseException as e:
             logger.warning(f"Built-in MCP registration failed (non-critical): {type(e).__name__}: {e}")
         try:
-            await asyncio.wait_for(mcp_manager.connect_all_enabled(), timeout=20)
-        except asyncio.TimeoutError:
-            logger.warning("User MCP startup timed out (non-critical)")
+            await mcp_manager.connect_all_enabled()
         except BaseException as e:
             logger.warning(f"MCP startup failed (non-critical): {e}")
+        # Availability watchdog: pings connected servers and reconnects stale
+        # ones so a crashed MCP subprocess recovers without a manual UI click.
+        try:
+            mcp_manager.start_availability_watchdog()
+        except BaseException as e:
+            logger.warning(f"MCP watchdog start failed (non-critical): {type(e).__name__}: {e}")
 
     _supervisor.register(TaskSpec(
         "mcp_connections", _startup_mcp_connections,

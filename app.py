@@ -589,24 +589,15 @@ logger.info("STT service initialized (provider managed via settings)")
 
 
 # Additional Managers consolidated for Registry
-from src.task_scheduler import TaskScheduler
-task_scheduler = TaskScheduler(session_manager)
+# Reuse the task_scheduler, mcp_manager and google_drive_organizer_service
+# created above instead of shadowing them with duplicate instances - otherwise
+# the lifespan (startup connects / availability watchdog) and the route/agent
+# handlers would operate on different manager instances and the admin UI would
+# always report MCP servers as disconnected.
 from src.event_bus import set_task_scheduler
 set_task_scheduler(task_scheduler)
-
-from src.mcp_manager import McpManager
-mcp_manager = McpManager()
 from src.agent_tools import set_mcp_manager
 set_mcp_manager(mcp_manager)
-
-from src.services.google_drive_organizer_service import GoogleDriveOrganizerService
-from src.integrations import get_integration
-class _GoogleDriveIntegrationsStoreAdapter:
-    def get_integration(self, owner_id=None, integration_id=None):
-        return get_integration(integration_id)
-google_drive_organizer_service = GoogleDriveOrganizerService(
-    integrations_store=_GoogleDriveIntegrationsStoreAdapter()
-)
 
 # Webhook Manager (must be created before registry)
 from src.webhook_manager import WebhookManager
