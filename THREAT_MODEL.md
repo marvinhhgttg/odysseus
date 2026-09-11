@@ -38,16 +38,19 @@ Non-admin defaults are in `core/auth.py:DEFAULT_PRIVILEGES`. Tool enforcement is
 - **Sessions:** bcrypt passwords, 7-day session tokens stored atomically in `data/sessions.json` via `core/atomic_io.py`.
 - **2FA:** TOTP with 8 single-use backup codes. Verified after password check, before session issuance.
 - **Reserved usernames:** `internal-tool`, `api`, `demo`, `system` cannot be registered or renamed into. Defined in `core/auth.py:RESERVED_USERNAMES`.
-  - `internal-tool` is security-critical: `core/middleware.py:require_admin` treats any request where `request.state.current_user == "internal-tool"` as the in-process tool loopback and grants admin unconditionally. A real account with that name would silently pass every `require_admin` check.
+  - `internal-tool` is security-critical: the auth middleware stamps `request.state.current_user = "internal-tool"` only after verifying a trusted loopback connection and a matching in-process token. `require_admin` re-checks the same loopback+token gate as defence-in-depth (not just the stamp) before granting admin unconditionally. A real account with that name would silently pass every `require_admin` check.
 - **Orphan sessions:** `validate_token` re-checks that the user record still exists on every call. A deleted user's cookie is dropped on next request rather than continuing to authenticate.
 
 ## Internal Tool Loopback
 
-Agent tool calls reach admin-gated HTTP routes over an in-process HTTP loopback. The mechanism:
+Agent tool calls reach admin-gated HTTP routes over an in-process HTTP loopback. The gate is defined once in `src/internal_tool_auth.py` — a single source of truth shared by both the auth middleware and the route-level `require_admin` dependency. The mechanism:
 
-1. At app startup, `core/middleware.py` generates a random `INTERNAL_TOOL_TOKEN` via `secrets.token_hex(32)`. It is never persisted and never sent to clients.
-2. Loopback requests carry `X-Odysseus-Internal-Token: <token>` or have `request.state.current_user` already set to `"internal-tool"` by the auth middleware.
-3. `require_admin` recognises either signal and grants access without checking the session user.
+1. At app startup, `core/middleware.py` generates a random `INTERNAL_TOOL_TOKEN` via `secrets.token_hex(32)`. It is never persisted and never sent to clients. It can instead be fixed per deployment with the `ODYSSEUS_INTERNAL_TOKEN` environment variable.
+2. The auth middleware only stamps `request.state.current_user` when `src/internal_tool_auth.internal_tool_request_ok()` holds: the request carries a matching `X-Odysseus-Internal-Token` header (constant-time `compare_digest`) **and** the peer is a trusted loopback host (`127.0.0.1`/`::1`) with no proxy/tunnel forwarding headers (`x-forwarded-for`, `cf-connecting-ip`, …). Requests forwarded by cloudflared/nginx connect from loopback, so the host check alone would let remote visitors inherit local trust; the forwarded-header check closes that.
+3. If the loopback call sets `X-Odysseus-Owner`, the request is attributed to that user only when the user actually exists — owner attribution, not authorization, which is checked separately.
+4. `require_admin` re-checks the same loopback+token gate itself rather than trusting the middleware stamp alone (defence-in-depth), so the bypass never depends on middleware ordering. A header from a remote client is rejected even with a correct token.
+
+`GET /api/diagnostics/internal-tool` (admin-only) exposes masked configuration facts — header name, `token_source` (env or ephemeral), loopback restriction — never the token value.
 
 The agent may be running in a non-admin user's session, but tool dispatch first calls `src/tool_security.py:owner_is_admin_or_single_user` to verify the session owner is an admin before issuing any loopback call. Non-admin users cannot invoke admin tools even via the agent.
 
