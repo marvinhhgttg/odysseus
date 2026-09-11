@@ -1775,6 +1775,39 @@ async def action_ping_notes(owner: str, **kwargs) -> Tuple[str, bool]:
         return str(e), False
 
 
+def build_email_triage_prompt(urgency_prompt: str, item: dict) -> str:
+    """Build the LLM triage prompt for one email, email content as untrusted.
+
+    From/Subject/Body come from the IMAP server and may contain prompt-injection
+    attempts; they are wrapped in the ``UNTRUSTED_SOURCE_DATA`` guard block.
+    """
+    from src.prompt_security import untrusted_context_message
+    email_payload = (
+        f"From: {item.get('from','')}\n"
+        f"Subject: {item.get('subject','')}\n"
+        f"Snippet:\n{item.get('body','')}\n"
+    )
+    guard_msg = untrusted_context_message(
+        "incoming email (from, subject, body)", email_payload
+    )["content"]
+    return (
+        "You are triaging ONE email. Return ONLY JSON: "
+        "{\"score\":0|1|2|3,\"tags\":[\"...\"],\"spam\":false,"
+        "\"reason\":\"one short phrase\"}.\n"
+        "0 = trivial / promotional · 1 = informational, no reply needed · "
+        "2 = should reply within a day · 3 = urgent, reply now (deadline, blocker).\n\n"
+        "Allowed visible tags: urgent, reply-soon, action-needed, calendar, bills, receipt, travel.\n"
+        "Use action-needed when the user likely needs to reply, pay, sign, book, or decide. "
+        "Use bills for bills or debts, receipt for purchases/deliveries, travel for reservations/trips, "
+        "and calendar only when a calendar event/reminder is involved. spam=true for scams, phishing, "
+        "junk, cold sales, generic ads, or no-personal-action bulk mail.\n"
+        "Important: 'I'm outside', 'I am outside', 'waiting outside', 'at the door', "
+        "'locked out', or 'can't get in' means score 3 unless clearly historical.\n\n"
+        f"User's rules:\n{urgency_prompt}\n\n"
+        f"Email:\n{guard_msg}\n"
+    )
+
+
 async def action_check_email_urgency(owner: str, **kwargs) -> Tuple[str, bool]:
     """Scan unread emails across all accounts, LLM-triage new ones, cache
     per-UID verdicts, tag the inbox, and fire a reminder when a previously
@@ -2078,23 +2111,7 @@ async def action_check_email_urgency(owner: str, **kwargs) -> Tuple[str, bool]:
                 continue
                 # ── LLM-classify. JSON-only response; bullet-proof parse.
                 llm_attempts += 1
-                prompt = (
-                    "You are triaging ONE email. Return ONLY JSON: "
-                    "{\"score\":0|1|2|3,\"tags\":[\"...\"],\"spam\":false,"
-                    "\"reason\":\"one short phrase\"}.\n"
-                    "0 = trivial / promotional · 1 = informational, no reply needed · "
-                    "2 = should reply within a day · 3 = urgent, reply now (deadline, blocker).\n\n"
-                    "Allowed visible tags: urgent, reply-soon, action-needed, calendar, bills, receipt, travel.\n"
-                    "Use action-needed when the user likely needs to reply, pay, sign, book, or decide. "
-                    "Use bills for bills or debts, receipt for purchases/deliveries, travel for reservations/trips, "
-                    "and calendar only when a calendar event/reminder is involved. spam=true for scams, phishing, "
-                    "junk, cold sales, generic ads, or no-personal-action bulk mail.\n"
-                    "Important: 'I'm outside', 'I am outside', 'waiting outside', 'at the door', "
-                    "'locked out', or 'can't get in' means score 3 unless clearly historical.\n\n"
-                    f"User's rules:\n{urgency_prompt}\n\n"
-                    f"Email:\nFrom: {item.get('from','')}\nSubject: {item.get('subject','')}\n"
-                    f"Snippet:\n{item.get('body','')}\n"
-                )
+                prompt = build_email_triage_prompt(urgency_prompt, item)
                 try:
                     await wait_for_interactive_quiet("email urgency action")
                     raw = await llm_call_async_with_fallback(

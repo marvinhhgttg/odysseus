@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, Tuple
 
 from core.auth import RESERVED_USERNAMES
+from src.prompt_security import untrusted_context_message
 from src.task_action_policy import (
     is_admin_only_task_action,
     owner_has_admin_task_privileges,
@@ -49,6 +50,53 @@ def compose_task_relevant_tools(rag_tools, assistant_always, disabled_tools):
     if disabled_tools:
         tools -= set(disabled_tools)
     return tools
+
+
+CHECKIN_DATA_LABEL = "scheduled check-in data (calendar, notes, RSS, MCP snapshots)"
+
+
+def build_checkin_context(data_dump: str, task_prompt: str) -> str:
+    """Assemble the check-in user message from external data + the task prompt.
+
+    The external payload (calendar events, notes/tasks, RSS entries, MCP
+    snapshots) is untrusted user-editable or third-party content, so it is
+    wrapped in the ``UNTRUSTED_SOURCE_DATA`` guard block. A prompt-injection
+    hidden in a calendar title, RSS item, or MCP response can therefore not
+    restyle the instruction layer. The task's own prompt and the fixed
+    check-in directives stay outside the guarded block.
+    """
+    untrusted = untrusted_context_message(CHECKIN_DATA_LABEL, data_dump)["content"]
+    return (
+        f"{untrusted}\n\n---\n\n{task_prompt}\n\n"
+        "Write the check-in. YOU decide what matters, what to skip, how to format. "
+        "Only show future events. Calendar events are pre-tagged with importance: "
+        "[!!] critical, [!] high, plain = normal, ' ·' = low. "
+        "GROUP your output by importance — lead with critical/high, then normal, "
+        "skip low entirely unless explicitly relevant. Mention event type (work/health/travel/etc) "
+        "where it adds context (e.g. 'leave 1h early for travel'). "
+        "Flag anything coming up that needs prep (birthdays, deadlines, holidays). "
+        "Use tools to take action if needed. Keep it concise — no raw data dumps."
+    )
+
+
+def build_grace_context(tool_results: list) -> str:
+    """Assemble the grace-summary prompt, keeping captured tool output untrusted.
+
+    Tool results gathered from the SSE ``tool_output`` events may contain
+    fetched external content (web pages, emails, MCP responses). When they are
+    re-sent to the LLM for a summary they must sit inside the untrusted block,
+    not read as fresh instructions.
+    """
+    ctx = "You ran out of steps. "
+    if tool_results:
+        wrapped = untrusted_context_message(
+            "captured tool results", "\n".join(tool_results[-5:])
+        )["content"]
+        ctx += f"Here's what your tools returned:\n{wrapped}"
+    else:
+        ctx += "No tool results were captured."
+    ctx += "\n\nSummarize what you accomplished and what's still pending. Be concise."
+    return ctx
 
 
 # ── Shared TTL cache (singleflight) ────────────────────────────────────────
@@ -1504,18 +1552,7 @@ class TaskScheduler:
         for key, val in raw.items():
             data_dump += f"--- {key} ---\n{val}\n\n"
 
-        context = (
-            data_dump +
-            f"---\n\n{task.prompt}\n\n"
-            "Write the check-in. YOU decide what matters, what to skip, how to format. "
-            "Only show future events. Calendar events are pre-tagged with importance: "
-            "[!!] critical, [!] high, plain = normal, ' ·' = low. "
-            "GROUP your output by importance — lead with critical/high, then normal, "
-            "skip low entirely unless explicitly relevant. Mention event type (work/health/travel/etc) "
-            "where it adds context (e.g. 'leave 1h early for travel'). "
-            "Flag anything coming up that needs prep (birthdays, deadlines, holidays). "
-            "Use tools to take action if needed. Keep it concise — no raw data dumps."
-        )
+        context = build_checkin_context(data_dump, task.prompt)
 
         return await self._run_agent_loop(
             endpoint_url, model, task, session_id,
@@ -1967,12 +2004,7 @@ class TaskScheduler:
         if not full_text.strip():
             try:
                 from src.task_endpoint import task_llm_call_async
-                grace_context = "You ran out of steps. "
-                if tool_results:
-                    grace_context += "Here's what your tools returned:\n" + "\n".join(tool_results[-5:])
-                else:
-                    grace_context += "No tool results were captured."
-                grace_context += "\n\nSummarize what you accomplished and what's still pending. Be concise."
+                grace_context = build_grace_context(tool_results)
                 full_text = await task_llm_call_async(
                     messages=[
                         {"role": "system", "content": system_content},
