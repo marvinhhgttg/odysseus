@@ -139,6 +139,16 @@ def _enforce_chat_privileges(request, sess) -> None:
 
     privs = auth_manager.get_privileges(user) or {}
 
+    # API-token callers are capped to what their scopes grant: a chat-scoped
+    # token of an admin owner must not inherit the owner's elevated model
+    # privileges. (See src/token_scopes.py.)
+    if getattr(request, "state", None) and getattr(request.state, "api_token", False):
+        from src.token_scopes import effective_privileges_for_token
+
+        privs = effective_privileges_for_token(
+            getattr(request.state, "api_token_scopes", []), privs
+        )
+
     # Explicit "block everything" sentinel takes precedence over the
     # allowlist — it's the only way to distinguish "user clicked [None]"
     # (block all) from "user clicked [All]" (no restriction), since both

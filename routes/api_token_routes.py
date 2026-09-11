@@ -14,6 +14,10 @@ MAX_NAME_LEN = 100
 DEFAULT_SCOPES = "chat"
 ALLOWED_SCOPES = {
     "chat",
+    # Full owner-equivalent token: carries every capability the owning user
+    # has (shell, files, email, ...). Chat routes only pass elevated
+    # privileges through when this scope is present — see src/token_scopes.py.
+    "admin",
     "todos:read",
     "todos:write",
     "documents:read",
@@ -30,6 +34,9 @@ ALLOWED_SCOPES = {
 }
 TOKEN_PROFILES = {
     "chat": ["chat"],
+    # "admin" carries the owner-equivalent privileges (shell, files, email, ...).
+    # "chat" is included so the token also passes the chat/model scope gates.
+    "admin": ["admin", "chat"],
     "codex_todos": ["todos:read", "todos:write"],
     "codex_documents": ["documents:read", "documents:write"],
     "codex_email_drafts": ["email:read", "email:draft", "documents:read", "documents:write"],

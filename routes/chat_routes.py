@@ -1117,11 +1117,14 @@ def setup_chat_routes(
                 "mcp__email__reply_to_email",
             })
 
-        # Enforce per-user privileges
-        _privs = {}
+        # Enforce per-user privileges. API-token callers inherit only what their
+        # scopes grant — never the owner's full privileges, so a chat-scoped
+        # token of an admin owner cannot reach the agent's shell. (See
+        # src/token_scopes.py.)
         _user = ctx.user
-        if _user and auth_manager:
-            _privs = auth_manager.get_privileges(_user)
+        from src.token_scopes import chat_privileges
+
+        _privs = chat_privileges(request, auth_manager, _user)
         if _privs:
             if not _privs.get("can_use_bash", True):
                 disabled_tools.update({"bash", "python", "read_file", "write_file"})

@@ -5207,6 +5207,7 @@ async function initUnifiedIntegrations() {
     } catch (_) {}
 
     const toolScopes = [
+      { key: 'admin', label: 'Admin (full)', detail: 'Full owner privileges — shell, files, email, everything' },
       { key: 'todos:read', label: 'Todos', detail: 'Read notes and checklists' },
       { key: 'todos:write', label: 'Todos write', detail: 'Create, update, delete, and toggle todo items' },
       { key: 'documents:read', label: 'Documents', detail: 'Read documents when a document API is enabled' },
