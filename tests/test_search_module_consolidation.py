@@ -35,8 +35,16 @@ def test_src_search_package_exports_still_resolve():
     assert search.PROVIDER_INFO is service_search.PROVIDER_INFO
 
 
-def test_src_search_cache_content_query_alias_services():
-    for name in ("cache", "content", "query"):
+def test_src_search_cache_content_query_ranking_alias_services():
+    for name in ("cache", "content", "query", "ranking"):
         src_mod = importlib.import_module(f"src.search.{name}")
         svc_mod = importlib.import_module(f"services.search.{name}")
         assert src_mod is svc_mod, f"src.search.{name} should alias services.search.{name}"
+
+
+def test_src_search_ranking_symbols_resolve_via_alias():
+    src_ranking = importlib.import_module("src.search.ranking")
+    svc_ranking = importlib.import_module("services.search.ranking")
+
+    assert src_ranking.rank_search_results is svc_ranking.rank_search_results
+    assert src_ranking.recency_score is svc_ranking.recency_score

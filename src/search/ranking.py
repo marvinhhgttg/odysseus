@@ -1,14 +1,16 @@
-"""Compatibility re-export shim for the live ranking module.
+"""Compatibility wrapper for the canonical services.search.ranking module.
 
-The real implementation lives in :mod:`services.search.ranking`, which is what
-the search runtime (services/search/core.py) imports. This module used to hold a
-parallel copy; it now re-exports so the two cannot drift out of sync again.
+Rationale: the actual ranking implementation lives in
+``services.search.ranking``, which is what the search runtime
+(services/search/core.py) imports. This module used to hold a parallel copy;
+it now aliases via ``sys.modules`` replacement (mirroring
+``src/search/core.py``, ``providers.py``, ``analytics.py``, ``cache.py``,
+``content.py`` and ``query.py``) so the two cannot drift out of sync again
+while old ``src.search.ranking`` imports keep working.
 """
 
-from services.search.ranking import (  # noqa: F401
-    _AGE_FORMATS,
-    _SPORTS_HINT_RE,
-    _utcnow_naive,
-    rank_search_results,
-    recency_score,
-)
+import sys
+
+from services.search import ranking as _ranking
+
+sys.modules[__name__] = _ranking
