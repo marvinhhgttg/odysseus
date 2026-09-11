@@ -40,6 +40,7 @@ import themeModule from './js/theme.js';
 import cookbookModule from './js/cookbook.js';
 import groupModule from './js/group.js';
 import * as researchPanelModule from './js/research/panel.js?v=20260630researchthumb';
+import * as briefingModule from './js/briefing.js?v=20260911briefing';
 import ttsModule from './js/tts-ai.js';
 import spinnerModule from './js/spinner.js';
 import { initKeyboardShortcuts } from './js/keyboard-shortcuts.js';
@@ -162,6 +163,7 @@ function initRailHoverLabels() {
     'rail-chats': 'Chat',
     'rail-documents': 'Docs',
     'rail-calendar': 'Calendar',
+    'rail-briefing': 'Briefing',
     'rail-compare': 'Compare',
     'rail-cookbook': 'Cookbook',
     'rail-research': 'Research',
@@ -1085,6 +1087,20 @@ function initializeEventListeners() {
     });
   }
 
+  // Briefing tool button
+  const toolBriefingBtn = el('tool-briefing-btn');
+  if (toolBriefingBtn) {
+    toolBriefingBtn.addEventListener('click', async () => {
+      const Modals = await import('./js/modalManager.js');
+      // toggle returns true when a registered modal was minimized/restored;
+      // returns false when nothing is registered → open fresh.
+      if (!Modals.toggle('briefing-modal')) {
+        if (briefingModule.isBriefingOpen()) briefingModule.closeBriefing();
+        else briefingModule.openBriefing();
+      }
+    });
+  }
+
   // Notes tool button
   const toolNotesBtn = el('tool-notes-btn');
   if (toolNotesBtn) {
@@ -1221,6 +1237,7 @@ function initializeEventListeners() {
     },
     '/memory':   () => document.getElementById('tool-memory-btn')?.click(),
     '/gallery':  () => document.getElementById('tool-gallery-btn')?.click(),
+    '/briefing': () => document.getElementById('tool-briefing-btn')?.click(),
     '/tasks':    () => document.getElementById('tool-tasks-btn')?.click(),
     '/library':  () => sessionModule && sessionModule.openLibrary && sessionModule.openLibrary(),
   };
@@ -2612,6 +2629,7 @@ function initializeEventListeners() {
     // Per-tool visibility — fine-grained control over which entries show
     // inside the Tools section in the sidebar.
     'tool-calendar':       '#tool-calendar-btn',
+    'tool-briefing':       '#tool-briefing-btn',
     'tool-compare':        '#tool-compare-btn',
     'tool-cookbook':       '#tool-cookbook-btn',
     'tool-research':       '#tool-research-btn',
@@ -3658,6 +3676,7 @@ function startOdysseusApp() {
     'rail-archive':   'tool-library-btn',
     'rail-gallery':   'tool-gallery-btn',
     'rail-tasks':     'tool-tasks-btn',
+    'rail-briefing':  'tool-briefing-btn',
     'rail-calendar':  'tool-calendar-btn',
     'rail-notes':     'tool-notes-btn',
     'rail-memory':    'tool-memory-btn',

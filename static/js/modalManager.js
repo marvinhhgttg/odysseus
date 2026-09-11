@@ -1402,6 +1402,7 @@ export function injectMinimizeButton(modal, modalId) {
 // clicking the same button restores it. Tools that need rebuild-on-restore
 // can still register explicitly with custom restoreFn/closeFn.
 const _AUTO_WIRE = {
+  'briefing-modal':       { rail: 'rail-briefing', sidebar: 'tool-briefing-btn' },
   'cookbook-modal':       { rail: 'rail-cookbook',  sidebar: 'tool-cookbook-btn' },
   'calendar-modal':       { rail: 'rail-calendar',  sidebar: 'tool-calendar-btn' },
   'gallery-modal':        { rail: 'rail-gallery',   sidebar: 'tool-gallery-btn' },
