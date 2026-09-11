@@ -129,6 +129,21 @@ def setup_diagnostics_routes(
         from src.settings import secret_storage_status
         return secret_storage_status()
 
+    @router.get("/api/diagnostics/internal-tool")
+    async def get_internal_tool_status(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """Masked configuration facts for the in-process tool-loopback auth.
+
+        Reports only booleans/constants: enabled, the header name (no value),
+        whether the token comes from env or is ephemeral per process, the
+        reserved pseudo-user, and that the path is loopback-restricted. Never
+        returns the token. Admin-only via require_admin.
+        """
+        from src.internal_tool_auth import internal_tool_status
+        return internal_tool_status()
+
     @router.get("/api/health/google-oauth")
     async def get_google_oauth_health(request: Request) -> Dict[str, Any]:
         """Per-integration Google OAuth token health.

@@ -132,17 +132,17 @@ def require_admin(request: Request) -> None:
     the in-process internal-tool token used by loopback agent tools.
     Works both as ``Depends(require_admin)`` and as a plain function call.
     """
-    from core.middleware import INTERNAL_TOOL_HEADER, INTERNAL_TOOL_TOKEN, INTERNAL_TOOL_USER
+    from core.middleware import INTERNAL_TOOL_USER
+    from src.internal_tool_auth import internal_tool_request_ok
 
-    # In-process bypass for tool-layer loopback calls
-    try:
-        hdr = request.headers.get(INTERNAL_TOOL_HEADER)
-        if hdr and __import__("secrets").compare_digest(hdr, INTERNAL_TOOL_TOKEN):
-            return
-        if getattr(request.state, "current_user", None) == INTERNAL_TOOL_USER:
-            return
-    except Exception:
-        pass
+    # In-process bypass for tool-layer loopback calls. Gate re-checked here
+    # (token AND trusted loopback) as defence in depth — never header alone.
+    if internal_tool_request_ok(request):
+        return
+    # AuthMiddleware only stamps the reserved pseudo-user after passing the
+    # same loopback gate; trust that stamp, not a raw header.
+    if getattr(request.state, "current_user", None) == INTERNAL_TOOL_USER:
+        return
 
     auth_mgr = get_auth_manager(request)
     if os.getenv("AUTH_ENABLED", "true").lower() == "false":
