@@ -27,6 +27,7 @@ from src.tool_security import (
     email_tool_policy_names,
     is_public_blocked_tool,
     owner_is_admin_or_single_user,
+    sandbox_restricted_tool,
 )
 from src.tool_policy import ToolPolicy
 from src.constants import MAX_OUTPUT_CHARS, MAX_READ_CHARS, MAX_DIFF_LINES, DATA_DIR
@@ -775,6 +776,19 @@ async def _execute_tool_block_impl(
         desc = f"{tool}: BLOCKED"
         result = {"error": f"Tool '{tool}' requires an admin user.", "exit_code": 1}
         logger.warning("Admin tool blocked for non-admin owner=%r tool=%s", owner, tool)
+        return desc, result
+
+    # Deployment sandbox (sandbox_mode=restricted): block shell + file-write
+    # tools for EVERY caller — admins included. This is the single dispatch
+    # choke point all tool execution funnels through, so neither the chat
+    # agent nor the task runner can route around the operator's policy.
+    if sandbox_restricted_tool(tool):
+        desc = f"{tool}: BLOCKED"
+        result = {
+            "error": f"Tool '{tool}' is blocked by the deployment sandbox (sandbox_mode=restricted).",
+            "exit_code": 1,
+        }
+        logger.warning("Sandbox blocked tool=%s", tool)
         return desc, result
 
     if is_public_blocked_tool(tool) and not _owner_is_admin(owner):

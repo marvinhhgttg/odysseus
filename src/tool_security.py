@@ -7,6 +7,21 @@ from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
 
+# Deployment sandbox (setting `sandbox_mode`): when set to "restricted", the
+# agent loses arbitrary-subprocess + filesystem-write power tools for EVERY
+# session — admins and single-user owners included — because those are the
+# tools that can hit the network or write outside the confined workspace.
+# Read-only investigation (read_file/grep/glob/ls) stays enabled, mirroring
+# the plan-mode partition: the shell cannot be made write-safe at the tool
+# layer, so it is removed outright. Not a strict OS sandbox — it is the
+# operator-level kill-switch for the capability the shell grants.
+SANDBOX_BLOCKED_TOOLS = frozenset({
+    "bash",
+    "python",
+    "write_file",
+    "edit_file",
+})
+
 
 # Every tool exposed by the built-in email MCP server
 # (mcp_servers/email_server.py). Single source of truth: the fence tags
@@ -230,6 +245,28 @@ def is_public_blocked_tool(tool_name: Optional[str]) -> bool:
     return tool_name in NON_ADMIN_BLOCKED_TOOLS or tool_name.startswith("mcp__")
 
 
+def sandbox_restricted_tool(tool_name: Optional[str]) -> bool:
+    """True when the deployment sandbox blocks this tool for every caller.
+
+    Fails open only on malformed input (there is no tool to gate); fails
+    closed on a settings-read error, i.e. an unknown deployment state never
+    leaves a sandboxed tool enabled by accident.
+    """
+    if tool_name is None or tool_name == "":
+        return False
+    if not isinstance(tool_name, str):
+        return True
+    try:
+        from src.settings import get_setting
+
+        if get_setting("sandbox_mode", "off") != "restricted":
+            return False
+    except Exception as exc:
+        logger.warning("Unable to read sandbox_mode setting: %s", exc)
+        return True
+    return tool_name in SANDBOX_BLOCKED_TOOLS
+
+
 def owner_is_admin_or_single_user(owner: Optional[str]) -> bool:
     """Return True for admins, or in intentional single-user mode.
 
@@ -261,7 +298,29 @@ def owner_is_admin_or_single_user(owner: Optional[str]) -> bool:
 
 
 def blocked_tools_for_owner(owner: Optional[str]) -> Set[str]:
-    """Tools to hide/disable for this owner under public-user policy."""
+    """Tools to hide/disable for this owner under public-user policy.
+
+    The owner's blocks are stacked with the deployment sandbox (if active) so
+    the UI and any owner-keyed callers also drop sandboxed tools, even for
+    admins — the sandbox is a deployment policy, not a per-user one.
+    """
+    tool_stack: Set[str]
     if owner_is_admin_or_single_user(owner):
-        return set()
-    return set(NON_ADMIN_BLOCKED_TOOLS)
+        tool_stack = set()
+    else:
+        tool_stack = set(NON_ADMIN_BLOCKED_TOOLS)
+
+    if sandbox_is_active():
+        tool_stack |= SANDBOX_BLOCKED_TOOLS
+    return tool_stack
+
+
+def sandbox_is_active() -> bool:
+    """True when the deployment sandbox setting is in a restricted mode."""
+    try:
+        from src.settings import get_setting
+
+        return get_setting("sandbox_mode", "off") == "restricted"
+    except Exception as exc:
+        logger.warning("Unable to read sandbox_mode setting: %s", exc)
+        return False

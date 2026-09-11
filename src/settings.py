@@ -147,6 +147,14 @@ DEFAULT_SETTINGS = {
     # entry is an absolute path. Sensitive subpaths (.ssh, .gnupg, shell
     # rc files, SSH key files) are always blocked regardless of roots.
     "tool_path_extra_roots": [],
+    # Deployment sandbox for the agent's power tools. "off" = current
+    # behaviour (admins / single-user owners may run shell + write files).
+    # "restricted" = the agent loses arbitrary subprocess + filesystem-write
+    # tools for EVERY session, admins included; read-only investigation
+    # (read_file / grep / glob / ls) stays enabled. Enforced at the single
+    # tool-dispatch choke point in src/tool_security.py + tool_execution.py,
+    # so no caller can route around it.
+    "sandbox_mode": "off",
     "task_endpoint_id": "",
     "task_model": "",
     "default_endpoint_id": "",
