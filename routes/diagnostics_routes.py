@@ -114,6 +114,21 @@ def setup_diagnostics_routes(
             media_type="text/plain; version=0.0.4",
         )
 
+    @router.get("/api/diagnostics/secrets")
+    async def get_secret_storage_status(
+        request: Request,
+        _admin: None = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """Encrypted-at-rest status for settings secrets.
+
+        For each secret-shaped settings key reports only booleans: is it
+        configured (non-empty) and is the value on disk Fernet-encrypted?
+        Plus the app-key file's presence and POSIX mode (must be 0o600).
+        Never returns the secret values. Admin-only via require_admin.
+        """
+        from src.settings import secret_storage_status
+        return secret_storage_status()
+
     @router.get("/api/health/google-oauth")
     async def get_google_oauth_health(request: Request) -> Dict[str, Any]:
         """Per-integration Google OAuth token health.

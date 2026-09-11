@@ -6,11 +6,12 @@ All modules should import from here instead of accessing files directly.
 """
 
 import json
+import os
 import time
 import logging
 from typing import Any
 
-from src.constants import SETTINGS_FILE, FEATURES_FILE
+from src.constants import SETTINGS_FILE, FEATURES_FILE, APP_KEY_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,20 @@ def _invalidate_caches():
     global _settings_cache, _features_cache
     _settings_cache = None
     _features_cache = None
+
+# Settings keys that hold credentials. These are encrypted at rest in
+# data/settings.json (Fernet via src.secret_storage, master key data/.app_key),
+# transparently decrypted on read, and migrated in place from the legacy
+# plaintext format by migrate_settings_secrets(). Consumers keep working on the
+# plaintext value — only the bytes on disk are protected.
+SECRET_SETTING_KEYS = (
+    "brave_api_key",
+    "google_pse_key",
+    "tavily_api_key",
+    "serper_api_key",
+    # Legacy shared field still honoured by services/search (_get_provider_key).
+    "search_api_key",
+)
 
 # ── Default values ──
 
@@ -214,6 +229,14 @@ DEFAULT_FEATURES = {
 
 # ── Settings (data/settings.json) ──
 
+def _decrypt_secret_value(key: str, value: Any) -> Any:
+    """Decrypt an ``enc:``-prefixed stored secret on read (idempotent)."""
+    if key in SECRET_SETTING_KEYS and isinstance(value, str) and value.startswith("enc:"):
+        from src.secret_storage import decrypt as _decrypt_secret
+        return _decrypt_secret(value)
+    return value
+
+
 def load_settings() -> dict:
     """Load settings merged with defaults. Always returns a complete dict."""
     global _settings_cache
@@ -228,15 +251,98 @@ def load_settings() -> dict:
         merged = {**DEFAULT_SETTINGS, **saved}
     except (FileNotFoundError, PermissionError, json.JSONDecodeError, ValueError):
         merged = dict(DEFAULT_SETTINGS)
+    else:
+        # Heal legacy plaintext secrets at rest on the first read after upgrade.
+        migrate_settings_secrets()
+        merged = {
+            k: _decrypt_secret_value(k, v)
+            for k, v in merged.items()
+        }
     _settings_cache = (now, merged)
     return merged
 
 
 def save_settings(settings: dict):
-    """Persist settings to disk (atomic; see core.atomic_io)."""
+    """Persist settings to disk (atomic; see core.atomic_io). Secret-shaped
+    keys are Fernet-encrypted before the write, so credentials never touch
+    disk in plaintext."""
     from core.atomic_io import atomic_write_json
-    atomic_write_json(SETTINGS_FILE, settings, indent=2)
+    from src.secret_storage import encrypt as _encrypt_secret
+    outgoing = {
+        k: (_encrypt_secret(v) if k in SECRET_SETTING_KEYS and isinstance(v, str) else v)
+        for k, v in settings.items()
+    }
+    atomic_write_json(SETTINGS_FILE, outgoing, indent=2)
     _invalidate_caches()
+
+
+def migrate_settings_secrets() -> bool:
+    """Encrypt legacy plaintext secret keys in settings.json in place.
+
+    Idempotent: returns False (and writes nothing) when the file is missing,
+    not an object, has no secret keys, or every secret key is already
+    ``enc:``-encrypted. Returns True only after an atomic rewrite. Invoked
+    lazily from load_settings() so existing installs heal on first read.
+    """
+    from core.atomic_io import atomic_write_json
+    from src.secret_storage import encrypt as _encrypt_secret
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(saved, dict):
+        return False
+    rewritten = dict(saved)
+    changed = False
+    converted = 0
+    for key in SECRET_SETTING_KEYS:
+        val = rewritten.get(key)
+        if isinstance(val, str) and val and not val.startswith("enc:"):
+            rewritten[key] = _encrypt_secret(val)
+            changed = True
+            converted += 1
+    if not changed:
+        return False
+    atomic_write_json(SETTINGS_FILE, rewritten, indent=2)
+    _invalidate_caches()
+    logger.info("Secrets migration: encrypted %d stored secret(s) at rest", converted)
+    return True
+
+
+def secret_storage_status() -> dict:
+    """Encrypted-at-rest status for settings secrets (booleans only — never
+    the values themselves). Admin diagnostics surface."""
+    raw: dict = {}
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            loaded_raw = json.load(f)
+        if isinstance(loaded_raw, dict):
+            raw = loaded_raw
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError, ValueError):
+        raw = {}
+    secrets = {}
+    for key in SECRET_SETTING_KEYS:
+        val = raw.get(key)
+        is_str = isinstance(val, str)
+        secrets[key] = {
+            "configured": bool(is_str and val),
+            "encrypted_at_rest": bool(is_str and val.startswith("enc:")),
+        }
+    key_status: dict = {"present": os.path.exists(APP_KEY_FILE)}
+    if key_status["present"]:
+        try:
+            key_status["mode_0600"] = (os.stat(APP_KEY_FILE).st_mode & 0o777) == 0o600
+        except OSError:
+            key_status["mode_0600"] = False
+    return {
+        "key_file": key_status,
+        "secrets": secrets,
+        "legacy_plaintext_remaining": any(
+            entry["configured"] and not entry["encrypted_at_rest"]
+            for entry in secrets.values()
+        ),
+    }
 
 
 def get_setting(key: str, default: Any = None) -> Any:
