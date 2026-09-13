@@ -11,14 +11,14 @@ from src.services.google_oauth_service import (
 )
 
 router = APIRouter(prefix="/api/auth/integrations/google-drive", tags=["google-oauth"])
+google_tasks_router = APIRouter(prefix="/api/auth/integrations/google-tasks", tags=["google-oauth"])
 
 
 @router.post("/connect")
 async def google_drive_connect(payload: dict = Body(default={})):
     integration_id = payload.get("integration_id")
     mode = payload.get("mode", "metadata_readonly")
-    owner_id = "local-user"
-    return begin_connect(owner_id=owner_id, integration_id=integration_id, mode=mode)
+    return _begin_google_connect(integration_id=integration_id, mode=mode)
 
 
 @router.get("/callback")
@@ -27,27 +27,40 @@ async def google_drive_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
 ):
+    return await _google_oauth_callback(code=code, state=state, error=error)
+
+
+def _begin_google_connect(*, integration_id, mode):
+    owner_id = "local-user"
+    return begin_connect(owner_id=owner_id, integration_id=integration_id, mode=mode)
+
+
+async def _google_oauth_callback(*, code, state, error):
     if error:
         raise HTTPException(400, f"Google authorization denied: {error}")
     if not code or not state:
         raise HTTPException(400, "Missing Google OAuth code or state")
 
     result = await handle_callback(code=code, state=state)
-    target = f"/integrations?google_drive_connected=1&integration_id={result['integration_id']}"
+    provider = "google_tasks" if result.get("provider") == "google_tasks" else "google_drive"
+    target = f"/integrations?{provider}_connected=1&integration_id={result['integration_id']}"
     return RedirectResponse(url=target, status_code=303)
 
 
-@router.get("/{integration_id}/oauth-status")
-async def google_drive_oauth_status(integration_id: str):
+def _require_oauth_integration(integration_id: str):
     integration = get_integration(integration_id)
     if not integration:
         raise HTTPException(404, "Integration not found")
+    return integration
+
+
+def _oauth_status_dict(integration: dict) -> dict:
     return {
         "connected": bool(
             integration.get("oauth_access_token")
             or integration.get("settings", {}).get("access_token")
         ),
-        "provider": "google_drive",
+        "provider": integration.get("provider") or "google_drive",
         "connected_email": integration.get("oauth_connected_email", ""),
         "scope": integration.get("oauth_scope", ""),
         "expires_at": integration.get("oauth_expires_at"),
@@ -58,37 +71,20 @@ async def google_drive_oauth_status(integration_id: str):
     }
 
 
-@router.post("/{integration_id}/refresh-token")
-async def google_drive_refresh_token(
-    integration_id: str,
-    force: bool = Query(default=False),
-):
-    integration = get_integration(integration_id)
-    if not integration:
-        raise HTTPException(404, "Integration not found")
-
+async def _oauth_refresh(integration: dict, force: bool) -> dict:
     before = integration.get("oauth_expires_at")
-    updated = await ensure_fresh_google_token(
-        integration,
-        force_refresh=force,
-    )
+    updated = await ensure_fresh_google_token(integration, force_refresh=force)
     after = updated.get("oauth_expires_at")
-
     return {
         "ok": True,
-        "integration_id": integration_id,
+        "integration_id": integration.get("id"),
         "expires_at": after,
         "refreshed": before != after,
         "forced": force,
     }
 
 
-@router.post("/{integration_id}/disconnect")
-async def google_drive_disconnect(integration_id: str):
-    integration = get_integration(integration_id)
-    if not integration:
-        raise HTTPException(404, "Integration not found")
-
+def _oauth_disconnect(integration_id: str) -> dict:
     patch = {
         "api_key": "",
         "oauth_access_token": "",
@@ -110,3 +106,58 @@ async def google_drive_disconnect(integration_id: str):
     if not updated:
         raise HTTPException(404, "Integration not found during disconnect")
     return {"ok": True, "integration_id": integration_id}
+
+
+@router.get("/{integration_id}/oauth-status")
+async def google_drive_oauth_status(integration_id: str):
+    return _oauth_status_dict(_require_oauth_integration(integration_id))
+
+
+@router.post("/{integration_id}/refresh-token")
+async def google_drive_refresh_token(
+    integration_id: str,
+    force: bool = Query(default=False),
+):
+    return await _oauth_refresh(_require_oauth_integration(integration_id), force=force)
+
+
+@router.post("/{integration_id}/disconnect")
+async def google_drive_disconnect(integration_id: str):
+    _require_oauth_integration(integration_id)
+    return _oauth_disconnect(integration_id)
+
+
+@google_tasks_router.post("/connect")
+async def google_tasks_connect(payload: dict = Body(default={})):
+    return _begin_google_connect(
+        integration_id=payload.get("integration_id"),
+        mode=payload.get("mode", "tasks"),
+    )
+
+
+@google_tasks_router.get("/callback")
+async def google_tasks_callback(
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+):
+    return await _google_oauth_callback(code=code, state=state, error=error)
+
+
+@google_tasks_router.get("/{integration_id}/oauth-status")
+async def google_tasks_oauth_status(integration_id: str):
+    return _oauth_status_dict(_require_oauth_integration(integration_id))
+
+
+@google_tasks_router.post("/{integration_id}/refresh-token")
+async def google_tasks_refresh_token(
+    integration_id: str,
+    force: bool = Query(default=False),
+):
+    return await _oauth_refresh(_require_oauth_integration(integration_id), force=force)
+
+
+@google_tasks_router.post("/{integration_id}/disconnect")
+async def google_tasks_disconnect(integration_id: str):
+    _require_oauth_integration(integration_id)
+    return _oauth_disconnect(integration_id)

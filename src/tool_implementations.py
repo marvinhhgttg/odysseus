@@ -67,6 +67,8 @@ from src.tools.calendar import do_manage_calendar  # noqa: F401
 from src.tools.image import do_edit_image  # noqa: F401
 # Research domain extracted to src/tools/research.py (slice 1, #4082/#4071).
 from src.tools.research import do_manage_research, do_trigger_research  # noqa: F401
+# Morning-briefing domain extracted to src/tools/briefing.py.
+from src.tools.briefing import do_get_briefing  # noqa: F401
 # Contacts domain extracted to src/tools/contacts.py (slice 1, #4082/#4071).
 from src.tools.contacts import do_resolve_contact, do_manage_contact  # noqa: F401
 # Vault domain extracted to src/tools/vault.py (slice 1, #4082/#4071).

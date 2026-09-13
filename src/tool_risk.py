@@ -52,6 +52,7 @@ READ_ONLY_TOOLS = frozenset({
     "vault_search",
     "vault_get",
     "manage_google_drive",
+    "get_briefing",
 })
 
 LOCAL_WRITE_TOOLS = frozenset({

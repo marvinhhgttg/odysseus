@@ -259,6 +259,7 @@ if AUTH_ENABLED:
     ]
     AUTH_EXEMPT_EXACT = tuple(list(AUTH_EXEMPT_EXACT) + [
         "/api/auth/integrations/google-drive/callback",
+        "/api/auth/integrations/google-tasks/callback",
     ])
 
     def _is_auth_exempt(path: str) -> bool:

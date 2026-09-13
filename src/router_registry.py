@@ -50,6 +50,7 @@ from routes.vault_routes import setup_vault_routes
 from routes.contacts.contacts_routes import setup_contacts_routes
 from companion import setup_companion_routes
 from routes.google_oauth_routes import router as google_oauth_router
+from routes.google_oauth_routes import google_tasks_router
 from routes.briefing_routes import setup_briefing_routes
 
 def register_all_routes(app: FastAPI, components: dict):
@@ -200,6 +201,7 @@ def register_all_routes(app: FastAPI, components: dict):
     # Companion & Google OAuth
     app.include_router(setup_companion_routes())
     app.include_router(google_oauth_router)
+    app.include_router(google_tasks_router)
 
     # PM Briefing aggregation (read-only dashboard tile)
     app.include_router(setup_briefing_routes())

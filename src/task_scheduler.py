@@ -1270,6 +1270,7 @@ class TaskScheduler:
         "test_skills",
         "audit_skills",
         "consolidate_memory",
+        "morning_briefing",
     })
 
     def _task_needs_model_slot(self, task_id: str) -> bool:

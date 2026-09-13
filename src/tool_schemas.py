@@ -1086,6 +1086,19 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_briefing",
+            "description": "Generate the morning briefing ('Morgenbriefing'): rich German overview of mail (per-mail summaries + importance/urgency), today's calendar and 7-day outlook with source tags and conflict fixes, open Google Tasks, top-5 actions, display-only [K]/[D]/[E] proposals. Use for 'Morgenbriefing', 'morning briefing', 'Tagesbriefing', daily overview.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_emails": {"type": "integer", "description": "Cap for how many recent emails to analyze (default 15)"},
+                },
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "resolve_contact",
             "description": "Look up a contact by name. Searches CardDAV address book and sent email history. Returns email addresses (when available) or phone numbers. Use when the user says 'message [name]', 'email [name]', or asks for someone's contact details.",
             "parameters": {

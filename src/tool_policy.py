@@ -110,6 +110,7 @@ _COMMON_TOOL_NAMES = {
     "stop_served_model",
     "suggest_document",
     "trigger_research",
+    "get_briefing",
     "ui_control",
     "update_document",
     "update_plan",

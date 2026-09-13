@@ -23,6 +23,7 @@ SCOPE_MAP = {
     "readonly": ["https://www.googleapis.com/auth/drive.readonly"],
     "file": ["https://www.googleapis.com/auth/drive.file"],
     "full": ["https://www.googleapis.com/auth/drive"],
+    "tasks": ["https://www.googleapis.com/auth/tasks"],
 }
 
 DEFAULT_MODE = "metadata_readonly"
@@ -64,8 +65,30 @@ def _client_secret() -> str:
 def _scope_list(mode: str) -> List[str]:
     scopes = SCOPE_MAP.get(mode or DEFAULT_MODE)
     if not scopes:
-        raise HTTPException(400, f"Unsupported Google Drive mode: {mode}")
+        raise HTTPException(400, f"Unsupported Google OAuth mode: {mode}")
     return scopes + ["openid", "email", "profile"]
+
+
+# Maps an OAuth flow's granted scopes back to the Google-family integration
+# provider that owns them. A flow that asked for the Tasks scope cannot land
+# in a "google_drive" integration (the Drive client would try to use a
+# tasks-only token); keep the two providers distinct while sharing one code
+# path and token plumbing.
+GOOGLE_PROVIDER_BY_SCOPE_SIGNATURE: tuple[tuple[str, str], ...] = (
+    ("/tasks", "google_tasks"),
+)
+
+
+def provider_for_requested_scopes(requested_scopes: Optional[List[str]]) -> str:
+    joined = " ".join(requested_scopes or [])
+    for signature, provider in GOOGLE_PROVIDER_BY_SCOPE_SIGNATURE:
+        if signature in joined:
+            return provider
+    return "google_drive"
+
+
+def _provider_label(provider: str) -> str:
+    return "Google Tasks" if provider == "google_tasks" else "Google Drive"
 
 
 def begin_connect(*, owner_id: str, integration_id: Optional[str], mode: str) -> Dict[str, Any]:
@@ -161,10 +184,23 @@ async def handle_callback(*, code: str, state: str) -> Dict[str, Any]:
     expires_at = _compute_expiry(token.get("expires_in"))
     userinfo = await _fetch_userinfo(access_token)
 
+    provider = provider_for_requested_scopes(pending.get("requested_scopes"))
+    settings: Dict[str, Any] = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "scope": scope,
+        "token_uri": GOOGLE_TOKEN_URI,
+        "auth_uri": GOOGLE_AUTH_URI,
+    }
+    if provider == "google_tasks":
+        settings["mode"] = "tasks"
+    else:
+        settings["drive_mode"] = "metadata_readonly"
+
     patch = {
-        "provider": "google_drive",
-        "preset": "google_drive",
-        "name": "Google Drive",
+        "provider": provider,
+        "preset": provider,
+        "name": _provider_label(provider),
         "base_url": "https://www.googleapis.com",
         "enabled": True,
         "auth_type": "bearer",
@@ -179,14 +215,7 @@ async def handle_callback(*, code: str, state: str) -> Dict[str, Any]:
         "oauth_client_secret": _client_secret(),
         "oauth_connected_email": userinfo.get("email", ""),
         "oauth_connected_subject": userinfo.get("sub", ""),
-        "settings": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "scope": scope,
-            "token_uri": GOOGLE_TOKEN_URI,
-            "auth_uri": GOOGLE_AUTH_URI,
-            "drive_mode": "metadata_readonly",
-        },
+        "settings": settings,
     }
 
     integration_id = pending.get("integration_id")

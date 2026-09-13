@@ -84,6 +84,15 @@ INTEGRATION_PRESETS: Dict[str, Dict[str, Any]] = {
             "tokens securely. Supports Drive file listing and organizer scans."
         ),
     },
+    "google_tasks": {
+        "name": "Google Tasks",
+        "auth_type": "bearer",
+        "description": (
+            "Google Tasks via OAuth 2.0. Use the Connect flow to obtain and refresh "
+            "tokens securely. Supplies the morning briefing's open-task overview "
+            "(read-only)."
+        ),
+    },
     "homeassistant": {
         "name": "Home Assistant",
         "auth_type": "bearer",

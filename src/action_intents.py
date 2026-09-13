@@ -110,6 +110,9 @@ _ROUTING_PATTERNS: tuple[tuple[str, str, Pattern[str]], ...] = tuple(
         ("research", "deep research imperative request", rf"{_PLEASE}(?:research|deep\s+dive|look\s+into|investigate)\s+.+"),
         ("research", "assistant deep research request", rf"{_ACTION_QUESTION}(?:research|do\s+research|deep\s+dive|look\s+into|investigate)\s+.+"),
 
+        # Morning briefing / daily overview.
+        ("briefing", "morning briefing request", r"\b(?:morgenbriefing|morning\s+briefing|tagesbriefing|tagesüberblick|daily\s+briefing)\b"),
+
         # Shell / remote-host intent.
         ("shell", "ssh request", r"\bssh\s+(?:in)?to\b"),
         ("shell", "ssh target request", r"\bssh\s+\w+"),

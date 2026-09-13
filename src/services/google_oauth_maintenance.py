@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Providers whose refresh flow uses `refresh_access_token`. Kept explicit so
 # adding another Google-family provider is a conscious change.
-_GOOGLE_OAUTH_PROVIDERS = frozenset({"google_drive"})
+_GOOGLE_OAUTH_PROVIDERS = frozenset({"google_drive", "google_tasks"})
 
 DEFAULT_WARNING_WINDOW = timedelta(hours=24)
 DEFAULT_SWEEP_INTERVAL_SECONDS = 3600  # once per hour

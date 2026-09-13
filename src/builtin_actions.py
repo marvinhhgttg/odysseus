@@ -1435,6 +1435,21 @@ async def action_daily_brief(owner: str, **kwargs) -> Tuple[str, bool]:
         return str(e), False
 
 
+async def action_morning_briefing(owner: str, **kwargs) -> Tuple[str, bool]:
+    """Build the rich morning briefing: per-mail LLM analysis, source-tagged
+    calendar with conflict detection, open Google Tasks, top-5 actions and
+    display-only [K]/[D]/[E] proposals with deep links."""
+    try:
+        from services.briefing.briefing_engine import generate_morning_briefing
+
+        max_emails = int((kwargs.get("max_emails") or 15))
+        text = await generate_morning_briefing(owner=owner, max_emails=max_emails)
+        return text, True
+    except Exception as e:
+        logger.error(f"morning_briefing action failed: {e}")
+        return str(e), False
+
+
 async def action_test_skills(owner: str, **kwargs) -> Tuple[str, bool]:
     """Run the per-skill Test on every skill: agent runs the procedure in a
     sandbox, LLM judges the transcript, verdict is recorded on the skill.
@@ -2761,6 +2776,7 @@ BUILTIN_ACTIONS = {
     # ping_events removed from the user-facing registry. Calendar reminders
     # are represented as Notes, so note pings are the single dispatch path.
     "daily_brief": action_daily_brief,
+    "morning_briefing": action_morning_briefing,
     "learn_sender_signatures": action_learn_sender_signatures,
     "ssh_command": action_ssh_command,
     "run_script": action_run_script,
@@ -2784,6 +2800,7 @@ BUILTIN_ACTION_INFO = {
     "extract_email_events": "Scan emails for booking/meeting confirmations and auto-add to calendar",
     "classify_events": "Tag upcoming events with importance (low/normal/high/critical) and type (work/health/travel/etc.); colors them too",
     "daily_brief": "Build a morning digest: today's calendar, unread email count + top senders, active todos",
+    "morning_briefing": "Rich morning briefing: per-email summaries + importance/urgency, source-tagged calendar with 7-day outlook and conflict fixes, open Google Tasks buckets, top-5 actions and display-only deep-link proposals ([K] calendar, [D] drive filing, [E] reply drafts)",
     "learn_sender_signatures": "LLM learns each sender's signature from 3+ of their recent emails; cached per address so future renders fold sigs reliably without heuristics",
     "ssh_command": "Run a shell command on a local or remote host",
     "run_script": "Run a script locally or on ODYSSEUS_SCRIPT_HOST",
