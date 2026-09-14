@@ -320,6 +320,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 next_run = compute_next_run(
                     schedule, args.get("scheduled_time", "09:00"),
                     args.get("scheduled_day"),
+                    tz_name=args.get("tz_name"),
                 )
 
             task_id = str(_uuid.uuid4())
@@ -337,6 +338,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 schedule=args.get("schedule") if trigger_type == "schedule" else None,
                 scheduled_time=args.get("scheduled_time", "09:00") if trigger_type == "schedule" else None,
                 scheduled_day=args.get("scheduled_day"),
+                tz_name=args.get("tz_name") if trigger_type == "schedule" else None,
                 trigger_type=trigger_type,
                 trigger_event=args.get("trigger_event"),
                 trigger_count=args.get("trigger_count"),
@@ -381,7 +383,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 changed.append("trigger_count")
 
             schedule_changed = False
-            for field in ("schedule", "scheduled_time", "scheduled_day"):
+            for field in ("schedule", "scheduled_time", "scheduled_day", "tz_name"):
                 if args.get(field) is not None:
                     setattr(task, field, args[field])
                     changed.append(field)
@@ -390,6 +392,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             if schedule_changed and (task.trigger_type or "schedule") == "schedule":
                 task.next_run = compute_next_run(
                     task.schedule, task.scheduled_time, task.scheduled_day,
+                    tz_name=task.tz_name,
                 )
 
             db.commit()
@@ -426,6 +429,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 if (task.trigger_type or "schedule") == "schedule":
                     task.next_run = compute_next_run(
                         task.schedule, task.scheduled_time, task.scheduled_day,
+                        tz_name=task.tz_name,
                     )
             db.commit()
             return {"response": f"Task '{task.name}' {action}d", "exit_code": 0}

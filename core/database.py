@@ -599,6 +599,7 @@ class ScheduledTask(TimestampMixin, Base):
     then_task_id   = Column(String, ForeignKey("scheduled_tasks.id", ondelete="SET NULL"), nullable=True)
     webhook_token  = Column(String, nullable=True, unique=True)
     crew_member_id = Column(String, nullable=True)     # optional link to crew_members.id
+    tz_name        = Column(String, nullable=True)        # IANA zone for scheduled_time (e.g. "Europe/Berlin")
     # character_id historically referenced an agent_characters table that was
     # never actually created. Keep the column for schema compatibility but
     # drop the ForeignKey so SQLAlchemy table sort doesn't fail on flush.
@@ -1609,6 +1610,19 @@ def _migrate_add_crew_member_id():
     except Exception as e:
         logging.getLogger(__name__).warning(f"crew_member_id migration: {e}")
 
+
+def _migrate_add_task_tz_name():
+    """Add tz_name column to scheduled_tasks for IANA-zone-aware scheduling."""
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(scheduled_tasks)"))]
+            if "tz_name" not in cols:
+                conn.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN tz_name TEXT"))
+                conn.commit()
+                logging.getLogger(__name__).info("Added tz_name column to scheduled_tasks")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"task tz_name migration: {e}")
+
 def _migrate_add_assistant_columns():
     """Add is_default_assistant + timezone columns to crew_members for the personal-assistant feature."""
     try:
@@ -1920,6 +1934,7 @@ def init_db():
     _migrate_add_notifications_enabled()
     _migrate_drop_ping_notes_tasks()
     _migrate_add_crew_member_id()
+    _migrate_add_task_tz_name()
     _migrate_add_assistant_columns()
     _migrate_add_email_smtp_security()
     _migrate_seed_email_account()

@@ -148,6 +148,7 @@ class TaskCreate(BaseModel):
     scheduled_day: Optional[int] = None           # day-of-week (0=Mon) or day-of-month
     scheduled_date: Optional[str] = None          # ISO datetime for "once"
     cron_expression: Optional[str] = None         # cron string e.g. "*/5 * * * *"
+    tz_name: Optional[str] = None                 # IANA zone, e.g. "Europe/Berlin"
     trigger_type: str = "schedule"                # "schedule" | "event" | "webhook"
     trigger_event: Optional[str] = None           # e.g. "session_created"
     trigger_count: Optional[int] = None           # fire every N events
@@ -169,6 +170,7 @@ class TaskUpdate(BaseModel):
     scheduled_day: Optional[int] = None
     scheduled_date: Optional[str] = None
     cron_expression: Optional[str] = None
+    tz_name: Optional[str] = None
     trigger_type: Optional[str] = None
     trigger_event: Optional[str] = None
     trigger_count: Optional[int] = None
@@ -200,6 +202,7 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
         "scheduled_day": t.scheduled_day,
         "scheduled_date": t.scheduled_date.isoformat() + "Z" if t.scheduled_date else None,
         "cron_expression": t.cron_expression,
+        "tz_name": t.tz_name,
         "trigger_type": t.trigger_type or "schedule",
         "trigger_event": t.trigger_event,
         "trigger_count": t.trigger_count,
@@ -500,6 +503,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 req.schedule, req.scheduled_time,
                 req.scheduled_day, sched_date,
                 cron_expression=req.cron_expression,
+                tz_name=req.tz_name,
             )
 
         # Generate webhook token if needed
@@ -542,6 +546,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 trigger_count=req.trigger_count,
                 trigger_counter=0,
                 next_run=next_run,
+                tz_name=req.tz_name if req.trigger_type == "schedule" else None,
                 status="active" if (req.trigger_type in ("event", "webhook") or next_run) else "completed",
                 output_target=req.output_target,
                 model=req.model or None,
@@ -716,6 +721,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                     except Exception:
                         raise HTTPException(400, "Invalid cron expression")
                 task.cron_expression = req.cron_expression or None
+            if req.tz_name is not None:
+                task.tz_name = req.tz_name or None
 
             # Recompute next_run if schedule changed
             schedule_changed = False
@@ -740,11 +747,15 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if req.cron_expression is not None:
                 schedule_changed = True
 
+            if req.tz_name is not None:
+                schedule_changed = True
+
             if schedule_changed and task.status == "active" and (task.trigger_type or "schedule") == "schedule":
                 task.next_run = compute_next_run(
                     task.schedule, task.scheduled_time,
                     task.scheduled_day, task.scheduled_date,
                     cron_expression=task.cron_expression,
+                    tz_name=task.tz_name,
                 )
 
             db.commit()
@@ -808,6 +819,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                     task.schedule, task.scheduled_time,
                     task.scheduled_day, task.scheduled_date,
                     cron_expression=task.cron_expression,
+                    tz_name=task.tz_name,
                 )
             db.commit()
             return {"ok": True, "status": "active", "next_run": task.next_run.isoformat() + "Z" if task.next_run else None}
