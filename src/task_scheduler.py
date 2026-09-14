@@ -610,6 +610,12 @@ class TaskScheduler:
         # old event scanner too caused duplicate emails/notifications for the
         # same calendar event.
         self._note_pings_task = asyncio.create_task(self._note_pings_loop())
+        # Calendar -> Google mirror sweep (10-min cadence). Lives in its own
+        # loop because the old `_event_pings_loop` (which used to host it) is
+        # intentionally not started anymore (event reminders moved to Notes).
+        self._google_sync_task = asyncio.create_task(self._google_calendar_loop())
+        # Proactive MCP OAuth token refresh (hourly, cheap when tokens are fresh).
+        self._mcp_oauth_refresh_task = asyncio.create_task(self._mcp_oauth_refresh_loop())
         logger.info(f"Task scheduler started (concurrency cap: {self._concurrency_cap})")
         # Audit clusters: show any minute-of-day where >1 active scheduled
         # tasks land. Helps spot "all my tasks fire at 9am" patterns the user
@@ -646,7 +652,7 @@ class TaskScheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        for attr in ("_note_pings_task", "_event_pings_task"):
+        for attr in ("_note_pings_task", "_event_pings_task", "_google_sync_task", "_mcp_oauth_refresh_task"):
             t = getattr(self, attr, None)
             if t:
                 t.cancel()
@@ -693,6 +699,42 @@ class TaskScheduler:
                 except Exception as e:
                     logger.warning(f"ping_events background scanner errored for owner={ow!r}: {e}")
             await asyncio.sleep(600)  # 10 min
+
+    async def _google_calendar_loop(self):
+        """Best-effort mirror of local calendar events into the Google
+        "Odysseus" calendar. No-op while the google_calendar integration is
+        not connected, so it is safe to run before consent exists.
+        Runs every 10 minutes, like the other infra scanners.
+        """
+        await asyncio.sleep(120)  # let the app settle after startup
+        while self._running:
+            try:
+                from src.services.google_calendar_sync_service import sync_pending_sweep
+                summary = await sync_pending_sweep()
+                if summary.get("pushed"):
+                    logger.info(f"google_calendar sweep: {summary}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"google_calendar sweep failed: {type(e).__name__}: {e}")
+            await asyncio.sleep(600)
+
+    async def _mcp_oauth_refresh_loop(self):
+        """Proactive refresh of stored MCP OAuth access tokens before they
+        expire. Most passes are no-ops (tokens still healthy); only servers
+        within the refresh window hit their token endpoints."""
+        await asyncio.sleep(180)  # after startup connects / OAuth flows finish
+        while self._running:
+            try:
+                from src.mcp_oauth import refresh_mcp_servers_due
+                summary = await refresh_mcp_servers_due()
+                if summary.get("checked"):
+                    logger.info(f"MCP OAuth token refresh sweep: {summary}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"MCP OAuth refresh loop error: {type(e).__name__}: {e}")
+            await asyncio.sleep(3600)
 
     def _known_task_owners(self) -> list:
         """Distinct non-empty owners that background scanners should visit.

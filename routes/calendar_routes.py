@@ -15,6 +15,14 @@ from dateutil.rrule import rrulestr
 from core.database import SessionLocal, CalendarCal, CalendarDeletedEvent, CalendarEvent
 from src.auth_helpers import require_user
 from src.upload_limits import read_upload_limited, ICS_MAX_BYTES
+from src.services.google_calendar_sync_service import (
+    GOOGLE_SYNC_STATE_CREATE,
+    GOOGLE_SYNC_STATE_UPDATE,
+    add_google_tombstone,
+    schedule_google_delete,
+    schedule_google_push,
+    stage_event_for_google,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1114,10 +1122,14 @@ def setup_calendar_routes() -> APIRouter:
                 color=data.color or None,
                 caldav_sync_pending="create" if cal.source == "caldav" else None,
             )
+            if cal.source != "caldav":
+                stage_event_for_google(ev, GOOGLE_SYNC_STATE_CREATE)
             db.add(ev)
             db.commit()
             if cal.source == "caldav":
                 await _push_caldav_event_after_commit(owner, uid, "create")
+            else:
+                schedule_google_push(uid, owner)
             return {"ok": True, "uid": uid}
         except HTTPException:
             raise
@@ -1166,9 +1178,16 @@ def setup_calendar_routes() -> APIRouter:
             is_caldav = ev.calendar and ev.calendar.source == "caldav"
             if is_caldav:
                 ev.caldav_sync_pending = "update"
+            else:
+                stage_event_for_google(
+                    ev,
+                    GOOGLE_SYNC_STATE_UPDATE if ev.google_event_id else GOOGLE_SYNC_STATE_CREATE,
+                )
             db.commit()
             if is_caldav:
                 await _push_caldav_event_after_commit(owner, base_uid, "update")
+            else:
+                schedule_google_push(base_uid, owner)
             return {"ok": True}
         except HTTPException:
             raise
@@ -1201,16 +1220,24 @@ def setup_calendar_routes() -> APIRouter:
                 ev.recurrence_exdates = json.dumps(sorted(exdates))
                 if is_caldav:
                     ev.caldav_sync_pending = "update"
+                elif ev.google_event_id:
+                    stage_event_for_google(ev, GOOGLE_SYNC_STATE_UPDATE)
                 db.commit()
                 if is_caldav:
                     await _push_caldav_event_after_commit(owner, base_uid, "update")
+                elif ev.google_event_id:
+                    schedule_google_push(base_uid, owner)
                 return {"ok": True, "scope": "occurrence", "exdate": key}
             if is_caldav:
                 _record_caldav_delete_tombstone(db, ev, owner)
+            elif ev.google_event_id:
+                add_google_tombstone(db, ev, owner)
             db.delete(ev)
             db.commit()
             if is_caldav:
                 await _push_caldav_event_after_commit(owner, base_uid, "delete")
+            elif ev.google_event_id:
+                schedule_google_delete(base_uid, owner)
             return {"ok": True}
         except HTTPException:
             raise

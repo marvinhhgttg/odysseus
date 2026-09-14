@@ -124,6 +124,27 @@ class DbTokenStorage:
 
     async def set_tokens(self, tokens) -> None:
         self._update("tokens", json.loads(tokens.model_dump_json()))
+        # Persist an absolute expiry (epoch seconds) next to the tokens so the
+        # proactive refresh loop can decide whether a refresh is due without
+        # re-parsing `expires_in` (which counts down from issue time).
+        try:
+            from mcp.client.auth.oauth2 import calculate_token_expiry
+            expires_at = calculate_token_expiry(getattr(tokens, "expires_in", None))
+        except ImportError:
+            expires_at = None
+        self._update("expires_at", expires_at)
+
+    async def get_expires_at(self):
+        value = self._load().get("expires_at")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    async def set_meta(self, meta: dict) -> None:
+        """Persist a small status/meta dict for observability (last refresh,
+        errors, expiry). Stored alongside 'tokens'/'client_info' under 'meta'."""
+        self._update("meta", meta)
 
     async def get_client_info(self):
         from mcp.shared.auth import OAuthClientInformationFull
@@ -191,3 +212,201 @@ def build_provider(server_id: str, url: str, on_redirect=None):
         redirect_handler=redirect_handler,
         callback_handler=callback_handler,
     )
+
+
+# ── Proactive token refresh ─────────────────────────────────────────────────
+
+async def _discover_token_endpoint(server_url: str) -> Optional[str]:
+    """Locate the OAuth token endpoint for an MCP server.
+
+    Mirrors the SDK's discovery chain (Protected Resource Metadata -> OAuth
+    Authorization Server Metadata). Returns None when discovery fails so the
+    caller falls back to the SDK's `{origin}/token` heuristic.
+    """
+    try:
+        import httpx
+        from mcp.client.auth.oauth2 import (
+            ProtectedResourceMetadata,
+            build_oauth_authorization_server_metadata_discovery_urls,
+            build_protected_resource_metadata_discovery_urls,
+            handle_auth_metadata_response,
+        )
+    except ImportError:
+        return None
+    async with httpx.AsyncClient(timeout=10) as client:
+        auth_server_url = None
+        for url in build_protected_resource_metadata_discovery_urls(None, server_url):
+            try:
+                resp = await client.get(url)
+            except Exception:
+                continue
+            if resp.status_code != 200:
+                continue
+            try:
+                prm = ProtectedResourceMetadata.model_validate_json(resp.content)
+            except Exception:
+                continue
+            if prm.authorization_servers:
+                auth_server_url = str(prm.authorization_servers[0])
+                break
+        for url in build_oauth_authorization_server_metadata_discovery_urls(
+            auth_server_url, server_url
+        ):
+            try:
+                resp = await client.get(url)
+            except Exception:
+                continue
+            ok, metadata = handle_auth_metadata_response(resp)
+            if ok and metadata and metadata.token_endpoint:
+                return str(metadata.token_endpoint)
+    return None
+
+
+# How long an access token must still be valid before the loop leaves it alone.
+MCP_REFRESH_MIN_TTL_SECONDS = 900
+
+
+async def _perform_refresh(provider, server_url: str):
+    """Run one token-refresh exchange through the SDK provider.
+
+    Returns (ok, new_expires_at, error-text).
+    """
+    token_endpoint = await _discover_token_endpoint(server_url)
+    if token_endpoint:
+        try:
+            from mcp.client.auth.oauth2 import OAuthMetadata
+            provider.context.oauth_metadata = OAuthMetadata(token_endpoint=token_endpoint)
+        except Exception:
+            pass
+    try:
+        import httpx
+        refresh_request = await provider._refresh_token()
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.send(refresh_request)
+        ok = await provider._handle_refresh_response(response)
+        storage = provider.context.storage
+        new_expires = await storage.get_expires_at() if ok else None
+        return ok, new_expires, ("" if ok else f"HTTP {response.status_code}")
+    except Exception as e:
+        return False, None, str(e)
+
+
+async def refresh_mcp_server_access_token(
+    server_id: str,
+    *,
+    min_ttl_seconds: float = MCP_REFRESH_MIN_TTL_SECONDS,
+) -> Dict[str, object]:
+    """Refresh one MCP server's OAuth access token before it expires.
+
+    Proactive counterpart to the SDK's lazy refresh (which runs on the first
+    request after expiry). For idle-but-connected servers this keeps the stored
+    token fresh so a 401 never escalates to a full interactive re-auth.
+
+    Returns a status dict; never raises:
+      {'status': 'valid'}            token expiry still far away
+      {'status': 'refreshed', ...}   token successfully renewed
+      {'status': 'no_tokens'|'no_refresh_token'|'load_failed'|'refresh_failed'|...}
+    """
+    from core.database import McpServer, SessionLocal
+
+    db = SessionLocal()
+    try:
+        srv = db.query(McpServer).filter(McpServer.id == server_id).first()
+    finally:
+        db.close()
+    if srv is None or not srv.is_enabled:
+        return {"status": "disabled_or_missing"}
+    if not (srv.url or "").startswith(("http://", "https://")):
+        return {"status": "not_http"}
+
+    storage = DbTokenStorage(server_id, session_factory=SessionLocal)
+    tokens = await storage.get_tokens()
+    if tokens is None or not tokens.access_token:
+        return {"status": "no_tokens"}
+    if not tokens.refresh_token:
+        try:
+            await storage.set_meta({"last_status": "no_refresh_token"})
+        except Exception:
+            pass
+        return {"status": "no_refresh_token"}
+
+    expires_at = await storage.get_expires_at()
+    now = time.time()
+    if expires_at is not None and expires_at - now > min_ttl_seconds:
+        try:
+            await storage.set_meta({"last_status": "valid", "expires_at": expires_at, "ttl_seconds": int(expires_at - now)})
+        except Exception:
+            pass
+        return {
+            "status": "valid",
+            "expires_at": expires_at,
+            "ttl_seconds": int(expires_at - now),
+        }
+
+    provider = build_provider(server_id, srv.url or "")
+    try:
+        await provider._initialize()
+    except Exception as e:
+        return {"status": "load_failed", "error": str(e)}
+
+    ok, new_expires, error = await _perform_refresh(provider, srv.url or "")
+    if ok:
+        try:
+            await storage.set_meta({"last_status": "refreshed", "expires_at": new_expires})
+        except Exception:
+            pass
+        return {"status": "refreshed", "expires_at": new_expires}
+    try:
+        await storage.set_meta({"last_status": "refresh_failed", "error": error})
+    except Exception:
+        pass
+    return {"status": "refresh_failed", "error": error}
+
+
+async def refresh_mcp_servers_due(
+    *,
+    min_ttl_seconds: float = MCP_REFRESH_MIN_TTL_SECONDS,
+) -> Dict[str, int]:
+    """Sweep every enabled HTTP MCP server that stores OAuth tokens.
+
+    Runs on a timer. Skips servers whose access token still has a healthy
+    remaining lifetime, so most passes touch nothing.
+    """
+    from core.database import McpServer, SessionLocal
+
+    db = SessionLocal()
+    try:
+        servers = (
+            db.query(McpServer)
+            .filter(McpServer.is_enabled == True)  # noqa: E712
+            .all()
+        )
+        rows = [
+            (s.id, s.url)
+            for s in servers
+            if s.oauth_tokens and (s.url or "").startswith(("http://", "https://"))
+        ]
+    finally:
+        db.close()
+
+    summary: Dict[str, int] = {
+        "checked": 0, "refreshed": 0, "valid": 0,
+        "no_tokens": 0, "no_refresh_token": 0, "failed": 0,
+    }
+    for server_id, url in rows:
+        summary["checked"] += 1
+        result = await refresh_mcp_server_access_token(
+            server_id, min_ttl_seconds=min_ttl_seconds
+        )
+        status = result.get("status")
+        if status == "refreshed":
+            summary["refreshed"] += 1
+        elif status == "valid":
+            summary["valid"] += 1
+        elif status == "no_tokens":
+            summary["no_tokens"] += 1
+        elif status == "no_refresh_token":
+            summary["no_refresh_token"] += 1
+        else:
+            summary["failed"] += 1
+    return summary

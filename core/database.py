@@ -1623,6 +1623,26 @@ def _migrate_add_task_tz_name():
     except Exception as e:
         logging.getLogger(__name__).warning(f"task tz_name migration: {e}")
 
+
+def _migrate_add_calendar_google_sync_columns():
+    """Add Google outbound-sync tracking columns to calendar_events."""
+    new_cols = {
+        "google_calendar_id": "TEXT",
+        "google_event_id": "TEXT",
+        "google_sync_state": "TEXT",
+        "google_synced_at": "DATETIME",
+    }
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(calendar_events)"))]
+            for col_name, col_def in new_cols.items():
+                if col_name not in cols:
+                    conn.execute(text(f"ALTER TABLE calendar_events ADD COLUMN {col_name} {col_def}"))
+            conn.commit()
+            logging.getLogger(__name__).info("Added Google sync columns to calendar_events")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"calendar google sync migration: {e}")
+
 def _migrate_add_assistant_columns():
     """Add is_default_assistant + timezone columns to crew_members for the personal-assistant feature."""
     try:
@@ -1721,6 +1741,12 @@ class CalendarEvent(TimestampMixin, Base):
     remote_href = Column(String, nullable=True)        # CalDAV object URL for updates/deletes
     remote_etag = Column(String, nullable=True)        # Last seen CalDAV ETag, when available
     caldav_sync_pending = Column(String, nullable=True) # create | update | delete retry marker
+    # Google Calendar outbound sync tracking. Populated once the google_calendar
+    # integration pushes the event into the dedicated "Odysseus" calendar.
+    google_calendar_id = Column(String, nullable=True)  # Google calendar id hosting the event
+    google_event_id    = Column(String, nullable=True)  # Google API event id (back-references local uid in extendedProperties)
+    google_sync_state  = Column(String, nullable=True)  # pending_create | pending_update | pending_delete | synced
+    google_synced_at   = Column(DateTime, nullable=True)
 
     calendar = relationship("CalendarCal", back_populates="events")
 
@@ -1736,6 +1762,18 @@ class CalendarDeletedEvent(TimestampMixin, Base):
     remote_etag = Column(String, nullable=True)
     caldav_base_url = Column(String, nullable=True)
     summary = Column(String, nullable=True)
+    last_error = Column(Text, nullable=True)
+
+
+class GoogleCalendarDeletedEvent(TimestampMixin, Base):
+    """Hidden delete tombstone kept until the Google mirror row is removed."""
+
+    __tablename__ = "google_calendar_deleted_events"
+
+    uid = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    google_calendar_id = Column(String, nullable=True)
+    google_event_id = Column(String, nullable=True)
     last_error = Column(Text, nullable=True)
 
 
@@ -1944,6 +1982,7 @@ def init_db():
     _migrate_add_calendar_account_id()
     _migrate_add_caldav_sync_columns()
     _migrate_add_calendar_recurrence_exdates()
+    _migrate_add_calendar_google_sync_columns()
     _migrate_chat_messages_fts()
     _migrate_encrypt_email_passwords()
     _migrate_encrypt_signatures()

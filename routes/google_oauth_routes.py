@@ -12,6 +12,7 @@ from src.services.google_oauth_service import (
 
 router = APIRouter(prefix="/api/auth/integrations/google-drive", tags=["google-oauth"])
 google_tasks_router = APIRouter(prefix="/api/auth/integrations/google-tasks", tags=["google-oauth"])
+google_calendar_router = APIRouter(prefix="/api/auth/integrations/google-calendar", tags=["google-oauth"])
 
 
 @router.post("/connect")
@@ -42,7 +43,7 @@ async def _google_oauth_callback(*, code, state, error):
         raise HTTPException(400, "Missing Google OAuth code or state")
 
     result = await handle_callback(code=code, state=state)
-    provider = "google_tasks" if result.get("provider") == "google_tasks" else "google_drive"
+    provider = result.get("provider") or "google_drive"
     target = f"/integrations?{provider}_connected=1&integration_id={result['integration_id']}"
     return RedirectResponse(url=target, status_code=303)
 
@@ -159,5 +160,41 @@ async def google_tasks_refresh_token(
 
 @google_tasks_router.post("/{integration_id}/disconnect")
 async def google_tasks_disconnect(integration_id: str):
+    _require_oauth_integration(integration_id)
+    return _oauth_disconnect(integration_id)
+
+
+@google_calendar_router.post("/connect")
+async def google_calendar_connect(payload: dict = Body(default={})):
+    return _begin_google_connect(
+        integration_id=payload.get("integration_id"),
+        mode=payload.get("mode", "calendar"),
+    )
+
+
+@google_calendar_router.get("/callback")
+async def google_calendar_callback(
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+):
+    return await _google_oauth_callback(code=code, state=state, error=error)
+
+
+@google_calendar_router.get("/{integration_id}/oauth-status")
+async def google_calendar_oauth_status(integration_id: str):
+    return _oauth_status_dict(_require_oauth_integration(integration_id))
+
+
+@google_calendar_router.post("/{integration_id}/refresh-token")
+async def google_calendar_refresh_token(
+    integration_id: str,
+    force: bool = Query(default=False),
+):
+    return await _oauth_refresh(_require_oauth_integration(integration_id), force=force)
+
+
+@google_calendar_router.post("/{integration_id}/disconnect")
+async def google_calendar_disconnect(integration_id: str):
     _require_oauth_integration(integration_id)
     return _oauth_disconnect(integration_id)

@@ -93,6 +93,15 @@ INTEGRATION_PRESETS: Dict[str, Dict[str, Any]] = {
             "(read-only)."
         ),
     },
+    "google_calendar": {
+        "name": "Google Calendar",
+        "auth_type": "bearer",
+        "description": (
+            "Google Calendar via OAuth 2.0. Use the Connect flow to obtain and refresh "
+            "tokens securely. Writes internal Odyssey events into a dedicated "
+            "Google calendar (\"Odysseus\") so they also appear in Google."
+        ),
+    },
     "homeassistant": {
         "name": "Home Assistant",
         "auth_type": "bearer",

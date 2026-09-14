@@ -97,6 +97,8 @@ def _drive_scheduler(monkeypatch, pre_start_setup=None):
         await asyncio.sleep(3600)
     monkeypatch.setattr(sch, "_loop", _never)
     monkeypatch.setattr(sch, "_note_pings_loop", _never)
+    monkeypatch.setattr(sch, "_google_calendar_loop", _never)
+    monkeypatch.setattr(sch, "_mcp_oauth_refresh_loop", _never)
 
     dispatched = []
     def _fake_create_task(coro):
@@ -113,10 +115,12 @@ def _drive_scheduler(monkeypatch, pre_start_setup=None):
         return dispatched
 
     all_dispatched = asyncio.run(_drive())
-    # start() also fires the long-lived _loop and _note_pings_loop as tasks
-    # (stubbed to _never here); filter those out so the test only counts
+    # start() also fires the long-lived _loop, _note_pings_loop, and the two
+    # infra loops (_google_calendar_loop, _mcp_oauth_refresh_loop) as tasks
+    # (all stubbed to _never here); filter those out so the test only counts
     # real per-poll task dispatches.
-    real_dispatches = [c for c in all_dispatched if c.__name__ != "_never"]
+    _INFRA = {"_never", "_google_calendar_loop", "_mcp_oauth_refresh_loop"}
+    real_dispatches = [c for c in all_dispatched if c.__name__ not in _INFRA]
     for coro in all_dispatched:
         coro.close()
     return cd, ScheduledTask, TaskRun, real_dispatches

@@ -27,6 +27,14 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
         _push_caldav_event_after_commit,
         _record_caldav_delete_tombstone,
     )
+    from src.services.google_calendar_sync_service import (
+        GOOGLE_SYNC_STATE_CREATE,
+        GOOGLE_SYNC_STATE_UPDATE,
+        add_google_tombstone,
+        schedule_google_delete,
+        schedule_google_push,
+        stage_event_for_google,
+    )
     import uuid as _uuid
 
     try:
@@ -420,6 +428,8 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
                 importance=importance,
                 caldav_sync_pending="create" if cal.source == "caldav" else None,
             )
+            if cal.source != "caldav":
+                stage_event_for_google(ev, GOOGLE_SYNC_STATE_CREATE)
             db.add(ev)
             reminder_note_id = None
             reminder_skipped_reason = None
@@ -435,6 +445,8 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
             db.commit()
             if cal.source == "caldav":
                 await _push_caldav_event_after_commit(owner, uid, "create")
+            else:
+                schedule_google_push(uid, owner)
             tag_blurb = f" [{event_type}]" if event_type else ""
             if minutes_before is None:
                 reminder_blurb = ""
@@ -499,9 +511,16 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
             is_caldav = ev.calendar and ev.calendar.source == "caldav"
             if is_caldav:
                 ev.caldav_sync_pending = "update"
+            else:
+                stage_event_for_google(
+                    ev,
+                    GOOGLE_SYNC_STATE_UPDATE if ev.google_event_id else GOOGLE_SYNC_STATE_CREATE,
+                )
             db.commit()
             if is_caldav:
                 await _push_caldav_event_after_commit(owner, base_uid, "update")
+            else:
+                schedule_google_push(base_uid, owner)
             return {"response": f"Updated event {uid}", "exit_code": 0}
 
         elif action == "delete_event":
@@ -518,10 +537,14 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
             is_caldav = ev.calendar and ev.calendar.source == "caldav" and ev.remote_href
             if is_caldav:
                 _record_caldav_delete_tombstone(db, ev, owner)
+            elif ev.google_event_id:
+                add_google_tombstone(db, ev, owner)
             db.delete(ev)
             db.commit()
             if is_caldav:
                 await _push_caldav_event_after_commit(owner, base_uid, "delete")
+            elif ev.google_event_id:
+                schedule_google_delete(base_uid, owner)
             return {"response": f"Deleted event {uid}", "exit_code": 0}
 
         else:

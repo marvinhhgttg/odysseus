@@ -24,6 +24,7 @@ SCOPE_MAP = {
     "file": ["https://www.googleapis.com/auth/drive.file"],
     "full": ["https://www.googleapis.com/auth/drive"],
     "tasks": ["https://www.googleapis.com/auth/tasks"],
+    "calendar": ["https://www.googleapis.com/auth/calendar"],
 }
 
 DEFAULT_MODE = "metadata_readonly"
@@ -76,6 +77,7 @@ def _scope_list(mode: str) -> List[str]:
 # path and token plumbing.
 GOOGLE_PROVIDER_BY_SCOPE_SIGNATURE: tuple[tuple[str, str], ...] = (
     ("/tasks", "google_tasks"),
+    ("/calendar", "google_calendar"),
 )
 
 
@@ -88,7 +90,11 @@ def provider_for_requested_scopes(requested_scopes: Optional[List[str]]) -> str:
 
 
 def _provider_label(provider: str) -> str:
-    return "Google Tasks" if provider == "google_tasks" else "Google Drive"
+    if provider == "google_tasks":
+        return "Google Tasks"
+    if provider == "google_calendar":
+        return "Google Calendar"
+    return "Google Drive"
 
 
 def begin_connect(*, owner_id: str, integration_id: Optional[str], mode: str) -> Dict[str, Any]:
@@ -194,6 +200,8 @@ async def handle_callback(*, code: str, state: str) -> Dict[str, Any]:
     }
     if provider == "google_tasks":
         settings["mode"] = "tasks"
+    elif provider == "google_calendar":
+        settings["mode"] = "calendar"
     else:
         settings["drive_mode"] = "metadata_readonly"
 
@@ -229,6 +237,7 @@ async def handle_callback(*, code: str, state: str) -> Dict[str, Any]:
     return {
         "ok": True,
         "integration_id": result["id"],
+        "provider": provider,
         "connected_email": userinfo.get("email", ""),
         "scope": scope,
         "expires_at": expires_at,
