@@ -68,7 +68,7 @@ def _ev(**overrides):
 
 def test_payload_basic_timed_utc():
     p = build_event_payload(_ev())
-    assert p["id"] == "odysseus-4ba7f4eb-3ba4-4bbd-a7d4-9b6b1a16166e"
+    assert p["id"] == "odisseu4ba7f4eb3ba44bbda7d49b6b1a16166e"
     assert p["summary"] == "Training"
     assert p["location"] == "Feld 1"
     assert p["start"] == {"dateTime": "2026-09-14T09:00:00Z", "timeZone": "UTC"}
@@ -86,10 +86,16 @@ def test_payload_all_day_exclusive_end():
     assert "dateTime" not in p["start"]
 
 
-def test_payload_floating_local_keeps_no_tz():
+def test_payload_floating_local_gets_named_zone():
     p = build_event_payload(_ev(is_utc=False))
-    assert p["start"] == {"dateTime": "2026-09-14T09:00:00"}
-    assert "timeZone" not in p["start"]
+    assert p["start"] == {
+        "dateTime": "2026-09-14T09:00:00",
+        "timeZone": "Europe/Berlin",
+    }
+    assert p["end"] == {
+        "dateTime": "2026-09-14T10:00:00",
+        "timeZone": "Europe/Berlin",
+    }
 
 
 def test_payload_rrule_prefix_normalized():
@@ -97,9 +103,25 @@ def test_payload_rrule_prefix_normalized():
     assert p["recurrence"] == ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
 
 
+def test_floating_tz_env_override(monkeypatch):
+    import src.services.google_calendar_sync_service as mod
+    monkeypatch.setattr(mod, "GOOGLE_CALENDAR_FLOATING_TZ", "America/New_York")
+    p = mod.build_event_payload(_ev(is_utc=False))
+    assert p["start"]["timeZone"] == "America/New_York"
+
+
 def test_payload_cancelled_status_mapped():
     p = build_event_payload(_ev(status="cancelled"))
     assert p["status"] == "cancelled"
+
+
+def test_payload_normalizes_reversed_time_range():
+    p = build_event_payload(_ev(
+        is_utc=False,
+        dtend=datetime(2026, 9, 14, 8, 0),  # before start -> normalized +1h
+    ))
+    assert p["start"]["dateTime"] == "2026-09-14T09:00:00"
+    assert p["end"]["dateTime"] == "2026-09-14T10:00:00"
 
 
 # ── Local-only staging decisions ─────────────────────────────────────────────

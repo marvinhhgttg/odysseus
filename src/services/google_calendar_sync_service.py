@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +22,14 @@ GOOGLE_SYNC_STATE_CREATE = "pending_create"
 GOOGLE_SYNC_STATE_UPDATE = "pending_update"
 GOOGLE_SYNC_STATE_DELETE = "pending_delete"
 GOOGLE_SYNC_STATE_SYNCED = "synced"
+
+# Calendar v3 requires an explicit time zone definition on every `dateTime`
+# field (RFC 3339 allows a bare offset; floating wall-clock times need the
+# named zone instead). Local events are stored as naive datetimes, so the
+# sync pins them to this IANA zone — they keep their wall-clock time there.
+GOOGLE_CALENDAR_FLOATING_TZ = os.getenv(
+    "ODYSSEUS_CALENDAR_TIMEZONE", "Europe/Berlin"
+)
 
 _ODYSSEUS_CALENDAR_ID_CACHE: Optional[str] = None
 
@@ -64,14 +73,23 @@ def stage_only_local(ev: Any) -> bool:
     return True
 
 
+# Google Calendar event ids allow only lowercase base32hex: letters a-v and
+# digits 0-9 (RFC 2938 §3.1.2), 5..1024 chars, must start with a letter.
+_VALID_EVENT_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuv0123456789"
+)
+
+
 def _google_event_stable_id(ev: Any) -> str:
     """Stable client-supplied event id so (re)inserts are idempotent.
 
-    Google requires `[a-z0-9._-]{5,1024}`; our uids are uuid4 hex, so a
-    lowercase prefix + uid always fits.
+    The raw uid is a uuid4 hex string with hyphens; hyphens (and letters w-z,
+    e.g. the "y" in "odysseus") are illegal in Google event ids, so the id is
+    built from a valid lowercase prefix plus the sanitised hex uid.
     """
-    uid = (getattr(ev, "uid", "") or "").lower().replace(":", "_")
-    return f"odysseus-{uid}"
+    uid = (getattr(ev, "uid", "") or "").lower()
+    safe = "".join(ch for ch in uid if ch in _VALID_EVENT_ID_CHARS)
+    return f"odisseu{safe or 'x'}"
 
 
 def build_event_payload(ev: Any) -> Dict[str, Any]:
@@ -107,24 +125,32 @@ def build_event_payload(ev: Any) -> Dict[str, Any]:
         payload["start"] = {"date": start_dt.date().isoformat()}
         payload["end"] = {"date": end_dt.date().isoformat()}
     else:
+        # A mirrored event whose end precedes its start would be rejected by
+        # Google ("specified time range is empty"); normalize to a sane
+        # default duration like the all-day branch does.
+        if end_dt is not None and start_dt is not None and end_dt <= start_dt:
+            end_dt = start_dt + timedelta(hours=1)
         start_fmt, end_fmt = None, None
         if start_dt is not None:
             start_fmt = start_dt.isoformat() + ("Z" if is_utc else "")
         if end_dt is not None:
             end_fmt = end_dt.isoformat() + ("Z" if is_utc else "")
-        content = {}
         if start_fmt is None:
             start_fmt = end_fmt
             end_dt = None
         payload["start"] = {"dateTime": start_fmt}
         if is_utc:
             payload["start"]["timeZone"] = "UTC"
+        else:
+            payload["start"]["timeZone"] = GOOGLE_CALENDAR_FLOATING_TZ
         if end_fmt is None and end_dt is not None:
             end_fmt = (end_dt + timedelta(hours=1)).isoformat() + ("Z" if is_utc else "")
         if end_fmt:
             payload["end"] = {"dateTime": end_fmt}
             if is_utc:
                 payload["end"]["timeZone"] = "UTC"
+            else:
+                payload["end"]["timeZone"] = GOOGLE_CALENDAR_FLOATING_TZ
 
     rrule = (getattr(ev, "rrule", None) or "").strip()
     if rrule:
